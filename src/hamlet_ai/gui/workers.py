@@ -1,0 +1,217 @@
+"""QObject workers that wrap each long-running operation behind Qt signals.
+
+Pattern: each worker is a plain ``QObject`` with ``log``, ``failed`` and one or
+more operation-specific signals. Callers construct the worker, move it onto a
+``QThread`` (``worker.moveToThread(thread); thread.started.connect(worker.run)``)
+and connect signals to GUI slots. ``cfg`` is **snapshot at construction** via
+``copy.deepcopy`` so mid-run toggles (e.g. flipping DRY_RUN) can't corrupt the
+in-flight operation.
+
+All workers swallow exceptions from the core into a ``failed(str)`` signal so
+the QThread can exit cleanly even on errors.
+"""
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+from typing import Sequence
+
+from PySide6.QtCore import QObject, Signal, Slot
+
+from hamlet_ai.config import AppConfig
+from hamlet_ai.core.script_gen.line_splitter import ParsedScript, ScriptLine, split_script
+from hamlet_ai.core.script_gen.llm import LLMClients, LLMProvider, generate as llm_generate
+from hamlet_ai.core.script_gen.prompt import ScriptGenParams, construct_prompt
+from hamlet_ai.core.script_gen.translation import translate as llm_translate
+from hamlet_ai.core.script_gen.tts import synthesize_line
+from hamlet_ai.core.voice_clone import pipeline as vc_pipeline
+
+
+# ---------- Base ----------------------------------------------------------
+
+class _WorkerBase(QObject):
+    log = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, cfg: AppConfig, parent: QObject | None = None):
+        super().__init__(parent)
+        self.cfg = copy.deepcopy(cfg)
+
+
+# ---------- Voice Clone workers ------------------------------------------
+
+class CloneWorker(_WorkerBase):
+    finished = Signal(str)  # voice_id
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            voice_id = vc_pipeline.clone_voice(self.cfg, log_fn=self.log.emit)
+            voice_id = vc_pipeline.wait_for_voice(self.cfg, voice_id, log_fn=self.log.emit)
+            self.finished.emit(voice_id)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class SynthesizeWorker(_WorkerBase):
+    progress = Signal(int, int)  # done, total
+    line_done = Signal(str, object)  # filename, path
+    finished = Signal()
+
+    def __init__(self, cfg: AppConfig, voice_id: str, lines: Sequence[tuple[str, str]], parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.voice_id = voice_id
+        self.lines = list(lines)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            total = len(self.lines)
+            for idx, (filename, text) in enumerate(self.lines, start=1):
+                self.log.emit(f"[{idx}/{total}] {filename}")
+                path = vc_pipeline.synthesize(
+                    self.cfg, self.voice_id, text, filename, log_fn=self.log.emit
+                )
+                self.line_done.emit(filename, path)
+                self.progress.emit(idx, total)
+            self.finished.emit()
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class AdHocTTSWorker(_WorkerBase):
+    finished = Signal(object)  # Path
+
+    def __init__(self, cfg: AppConfig, voice_id: str, text: str, filename: str, parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.voice_id = voice_id
+        self.text = text
+        self.filename = filename
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            path = vc_pipeline.synthesize(
+                self.cfg,
+                self.voice_id,
+                self.text,
+                self.filename,
+                log_fn=self.log.emit,
+                output_dir=self.cfg.voice_clone.adhoc_dir,
+            )
+            self.finished.emit(path)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class RunShowWorker(_WorkerBase):
+    finished = Signal()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            vc_pipeline.run_show(self.cfg, log_fn=self.log.emit)
+            self.finished.emit()
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+# ---------- Script Gen workers -------------------------------------------
+
+class LLMGenerationWorker(_WorkerBase):
+    finished = Signal(str)  # generated text
+
+    def __init__(self, cfg: AppConfig, params: ScriptGenParams, clients: LLMClients | None = None, parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.params = params
+        self.clients = clients
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            provider = LLMProvider(self.cfg.script_gen.default_provider)
+            model = self.cfg.script_gen.models[provider.value]
+            self.log.emit(f"Generating scene via {provider.value} ({model})...")
+            prompt = construct_prompt(self.params)
+            text = llm_generate(
+                prompt,
+                provider,
+                model,
+                anthropic_api_key=self.cfg.anthropic_api_key,
+                openai_api_key=self.cfg.openai_api_key,
+                clients=self.clients,
+            )
+            self.finished.emit(text)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class TranslationWorker(_WorkerBase):
+    finished = Signal(str)
+
+    def __init__(self, cfg: AppConfig, text: str, target_language: str = "German", clients: LLMClients | None = None, parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.text = text
+        self.target_language = target_language
+        self.clients = clients
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.log.emit(f"Translating to {self.target_language}...")
+            out = llm_translate(self.text, self.cfg, target_language=self.target_language, clients=self.clients)
+            self.finished.emit(out)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class SplitterWorker(_WorkerBase):
+    finished = Signal(object)  # ParsedScript
+
+    def __init__(self, cfg: AppConfig, text: str, parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.text = text
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.log.emit("Splitting scene into lines...")
+            parsed = split_script(self.text)
+            self.log.emit(f"   ✅ {len(parsed.lines)} lines, {len(parsed.characters)} characters, {len(parsed.rejected)} rejected.")
+            self.finished.emit(parsed)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class ScriptGenTTSWorker(_WorkerBase):
+    progress = Signal(int, int)
+    line_done = Signal(int, object)  # line_number, path
+    finished = Signal()
+
+    def __init__(
+        self,
+        cfg: AppConfig,
+        lines: Sequence[ScriptLine],
+        voice_resolver,  # Callable[[ScriptLine], str]
+        output_dir: Path,
+        parent: QObject | None = None,
+    ):
+        super().__init__(cfg, parent)
+        self.lines = list(lines)
+        self.voice_resolver = voice_resolver
+        self.output_dir = output_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            total = len(self.lines)
+            for idx, line in enumerate(self.lines, start=1):
+                voice_id = self.voice_resolver(line)
+                out = self.output_dir / f"{line.line_number:03d}-{line.character}.mp3"
+                self.log.emit(f"[{idx}/{total}] {out.name} ({voice_id})")
+                synthesize_line(self.cfg, line.dialogue, voice_id, out, log_fn=self.log.emit)
+                self.line_done.emit(line.line_number, out)
+                self.progress.emit(idx, total)
+            self.finished.emit()
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))

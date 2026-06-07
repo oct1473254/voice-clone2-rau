@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hamlet-ai"
+version = "0.1.0"
+description = "Unified voice-clone + Shakespeare-scene-generation toolkit for Wember/Wolf359 stage productions."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Wember / Wolf359" }]
+license = { text = "Proprietary" }
+# A minimal install of `pip install hamlet-ai` pulls only the bits needed to
+# import the CLI shell. Concrete features come in via extras so machines without
+# a microphone or display can still run unit/integration tests.
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+providers = [
+    "anthropic>=0.40",
+    "openai>=1.40",
+    "ollama>=0.3",
+]
+audio = [
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+]
+gui = [
+    "PySide6>=6.6",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "pytest-mock>=3.12",
+    "responses>=0.25",
+    "tqdm>=4.66",
+]
+all = [
+    "hamlet-ai[providers,audio,gui,dev]",
+]
+
+[project.scripts]
+hamlet-ai = "hamlet_ai.cli:entrypoint"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+qt_api = "pyside6"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

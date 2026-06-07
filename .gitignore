@@ -1,0 +1,58 @@
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+share/python-wheels/
+MANIFEST
+
+# --- Virtual envs ---
+.venv/
+venv/
+ENV/
+env/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache
+coverage.xml
+*.cover
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- App workspace (don't commit operator's local recordings) ---
+~/Desktop/VOICE-CLONE/
+~/Desktop/LLM-H/
+character_lines/
+newHamlet_*.txt
+German_NewHamlet_*.txt
