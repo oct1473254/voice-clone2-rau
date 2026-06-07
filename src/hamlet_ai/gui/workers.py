@@ -107,11 +107,33 @@ class AdHocTTSWorker(_WorkerBase):
 class RunShowWorker(_WorkerBase):
     finished = Signal()
 
+    def __init__(self, cfg: AppConfig, consent=None, parent: QObject | None = None):
+        super().__init__(cfg, parent)
+        self.consent = consent
+
     @Slot()
     def run(self) -> None:
         try:
-            vc_pipeline.run_show(self.cfg, log_fn=self.log.emit)
+            vc_pipeline.run_show(self.cfg, consent=self.consent, log_fn=self.log.emit)
             self.finished.emit()
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class DoctorWorker(_WorkerBase):
+    """Runs the doctor checks off the GUI thread; emits the assembled report."""
+
+    finished = Signal(object)  # DoctorReport
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from hamlet_ai.doctor import run_checks
+
+            report = run_checks(self.cfg)
+            for r in report.results:
+                self.log.emit(f"{r.status.upper()}: {r.name} — {r.detail}")
+            self.finished.emit(report)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 

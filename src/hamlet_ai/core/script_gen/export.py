@@ -2,24 +2,83 @@
 
 The legacy ``Hamlet-gen5.move_folders_to_desktop`` MOVED files, wiping the
 workspace and preventing re-runs. We COPY instead so the operator can re-export
-or replay steps. ``reset_workspace`` is the explicit destructive operation.
+or replay steps. ``reset_workspace`` is the only destructive operation and it
+must be explicitly confirmed.
+
+Step 6 additions:
+  * ``preview_destination`` reports the planned copies and which existing files
+    would be overwritten (drives the GUI's Export preview tree).
+  * ``copy_to_desktop`` accepts an ``overwrite_confirm`` callback so the GUI can
+    ask before clobbering existing Desktop files.
+  * ``reset_workspace(confirm=True)`` keeps a timestamped backup by default.
 """
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 from typing import Callable
 
 
 LogFn = Callable[[str], None]
+OverwriteConfirm = Callable[[list[Path]], bool]
+
+
+# Each tuple: (workspace subpath, desktop target name, suffix filter or None).
+_PLAN_SPECS = [
+    ("valid_lines/English/output", "Audio", None),
+    ("valid_lines/English", "TextEnglish", ".txt"),
+    ("valid_lines/German", "TextGerman", ".txt"),
+    ("cast_of_characters", "Names", ".txt"),
+]
+
+_TARGET_KEYS = {
+    "Audio": "audio",
+    "TextEnglish": "text_english",
+    "TextGerman": "text_german",
+    "Names": "names",
+}
+
+
+def _build_plan(workspace_dir: Path, desktop_root: Path) -> list[tuple[Path, Path]]:
+    """Return the list of (src_file, dest_file) copies that would be performed."""
+    plan: list[tuple[Path, Path]] = []
+    for sub, target_name, suffix in _PLAN_SPECS:
+        src_dir = workspace_dir / sub
+        if not src_dir.is_dir():
+            continue
+        dest_dir = desktop_root / target_name
+        for f in sorted(src_dir.iterdir()):
+            if not f.is_file():
+                continue
+            if suffix is not None and f.suffix != suffix:
+                continue
+            plan.append((f, dest_dir / f.name))
+    return plan
+
+
+def preview_destination(workspace_dir: Path, desktop_root: Path) -> dict:
+    """Describe what ``copy_to_desktop`` would do without touching disk."""
+    plan = _build_plan(workspace_dir, desktop_root)
+    overwrites = [dest for _, dest in plan if dest.exists()]
+    return {
+        "planned": plan,
+        "overwrites": overwrites,
+        "new": [dest for _, dest in plan if not dest.exists()],
+    }
 
 
 def copy_to_desktop(
     workspace_dir: Path,
     desktop_root: Path,
     log_fn: LogFn = print,
+    overwrite_confirm: OverwriteConfirm | None = None,
 ) -> dict[str, Path]:
     """Copy workspace artifacts into ``desktop_root`` with the LLM-H layout.
+
+    If any existing Desktop files would be overwritten and ``overwrite_confirm``
+    is provided, it is called with the list of those paths; returning False skips
+    the overwriting copies (new files are still written).
 
     Layout written under ``desktop_root``::
         Audio/        (mp3s from workspace/valid_lines/English/output)
@@ -28,48 +87,64 @@ def copy_to_desktop(
         Names/        (.txt from workspace/cast_of_characters)
     """
     desktop_root.mkdir(parents=True, exist_ok=True)
-    audio = desktop_root / "Audio"
-    text_en = desktop_root / "TextEnglish"
-    text_de = desktop_root / "TextGerman"
-    names = desktop_root / "Names"
-    for d in (audio, text_en, text_de, names):
+    targets = {name: desktop_root / name for name in _TARGET_KEYS}
+    for d in targets.values():
         d.mkdir(exist_ok=True)
 
-    en_output = workspace_dir / "valid_lines" / "English" / "output"
-    if en_output.is_dir():
-        for f in en_output.iterdir():
-            if f.is_file():
-                shutil.copy2(f, audio / f.name)
-        log_fn(f"📦 Copied audio → {audio}")
+    plan = _build_plan(workspace_dir, desktop_root)
+    overwrites = [dest for _, dest in plan if dest.exists()]
+    allow_overwrite = True
+    if overwrites and overwrite_confirm is not None:
+        allow_overwrite = bool(overwrite_confirm(overwrites))
+        if not allow_overwrite:
+            log_fn(f"⚠️  Skipping {len(overwrites)} existing file(s) (overwrite declined).")
 
-    en_text = workspace_dir / "valid_lines" / "English"
-    if en_text.is_dir():
-        for f in en_text.iterdir():
-            if f.is_file() and f.suffix == ".txt":
-                shutil.copy2(f, text_en / f.name)
-        log_fn(f"📦 Copied English text → {text_en}")
+    copied = 0
+    for src, dest in plan:
+        if dest.exists() and not allow_overwrite:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        copied += 1
+    log_fn(f"📦 Copied {copied} file(s) → {desktop_root}")
 
-    de_text = workspace_dir / "valid_lines" / "German"
-    if de_text.is_dir():
-        for f in de_text.iterdir():
-            if f.is_file() and f.suffix == ".txt":
-                shutil.copy2(f, text_de / f.name)
-        log_fn(f"📦 Copied German text → {text_de}")
-
-    cast = workspace_dir / "cast_of_characters"
-    if cast.is_dir():
-        for f in cast.iterdir():
-            if f.is_file() and f.suffix == ".txt":
-                shutil.copy2(f, names / f.name)
-        log_fn(f"📦 Copied cast → {names}")
-
-    return {"audio": audio, "text_english": text_en, "text_german": text_de, "names": names}
+    return {key: targets[name] for name, key in _TARGET_KEYS.items()}
 
 
-def reset_workspace(workspace_dir: Path, log_fn: LogFn = print) -> None:
-    """Clear all generated artifacts. Operator must confirm in the GUI."""
+def reset_workspace(
+    workspace_dir: Path,
+    log_fn: LogFn = print,
+    *,
+    confirm: bool = False,
+    backup: bool = True,
+    now: float | None = None,
+) -> Path | None:
+    """Clear all generated artifacts. Requires ``confirm=True``.
+
+    By default the existing workspace is moved to a timestamped sibling
+    (``{name}.reset-{ts}``) so artifacts are retained; pass ``backup=False`` to
+    delete outright. Returns the backup path (or ``None``).
+    """
+    if not confirm:
+        raise ValueError("reset_workspace is destructive; pass confirm=True to proceed.")
     if not workspace_dir.exists():
-        return
-    shutil.rmtree(workspace_dir)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return None
+
+    backup_path: Path | None = None
+    has_content = any(workspace_dir.iterdir())
+    if backup and has_content:
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+        backup_path = workspace_dir.parent / f"{workspace_dir.name}.reset-{ts}"
+        suffix = 1
+        while backup_path.exists():
+            backup_path = workspace_dir.parent / f"{workspace_dir.name}.reset-{ts}_{suffix}"
+            suffix += 1
+        shutil.move(str(workspace_dir), str(backup_path))
+        log_fn(f"🧹 Workspace reset; previous artifacts kept at {backup_path}")
+    else:
+        shutil.rmtree(workspace_dir)
+        log_fn(f"🧹 Workspace reset: {workspace_dir}")
+
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    log_fn(f"🧹 Workspace reset: {workspace_dir}")
+    return backup_path

@@ -57,6 +57,57 @@ def test_copy_to_desktop_handles_missing_subfolders(tmp_path):
 def test_reset_workspace_clears_artifacts(tmp_path):
     workspace = tmp_path / "ws"
     _populate_workspace(workspace)
-    reset_workspace(workspace, log_fn=lambda *_: None)
+    reset_workspace(workspace, log_fn=lambda *_: None, confirm=True, backup=False)
     assert workspace.is_dir()
     assert list(workspace.iterdir()) == []
+
+
+def test_reset_workspace_requires_confirm(tmp_path):
+    workspace = tmp_path / "ws"
+    _populate_workspace(workspace)
+    with pytest.raises(ValueError):
+        reset_workspace(workspace, log_fn=lambda *_: None)
+    # Untouched.
+    assert (workspace / "valid_lines" / "English" / "001-HAMLET.txt").is_file()
+
+
+def test_reset_workspace_keeps_timestamped_backup(tmp_path):
+    workspace = tmp_path / "ws"
+    _populate_workspace(workspace)
+    backup = reset_workspace(workspace, log_fn=lambda *_: None, confirm=True, now=0)
+    assert backup is not None and backup.is_dir()
+    assert (backup / "valid_lines" / "English" / "001-HAMLET.txt").is_file()
+    assert list(workspace.iterdir()) == []
+
+
+# ---------- preview + overwrite confirm -----------------------------------
+
+def test_preview_destination_flags_overwrites(tmp_path):
+    from hamlet_ai.core.script_gen.export import preview_destination
+
+    workspace = tmp_path / "ws"
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_workspace(workspace)
+    # Pre-create one of the destination files so it shows as an overwrite.
+    (desktop / "TextEnglish").mkdir(parents=True)
+    (desktop / "TextEnglish" / "001-HAMLET.txt").write_text("old")
+
+    preview = preview_destination(workspace, desktop)
+    overwrite_names = [p.name for p in preview["overwrites"]]
+    assert "001-HAMLET.txt" in overwrite_names
+    assert len(preview["planned"]) >= 3
+
+
+def test_copy_to_desktop_overwrite_declined_skips_existing(tmp_path):
+    workspace = tmp_path / "ws"
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_workspace(workspace)
+    (desktop / "TextEnglish").mkdir(parents=True)
+    (desktop / "TextEnglish" / "001-HAMLET.txt").write_text("KEEP ME")
+
+    copy_to_desktop(
+        workspace, desktop, log_fn=lambda *_: None, overwrite_confirm=lambda paths: False
+    )
+    # Declined → existing file preserved, new files still copied.
+    assert (desktop / "TextEnglish" / "001-HAMLET.txt").read_text() == "KEEP ME"
+    assert (desktop / "Audio" / "001-HAMLET.mp3").is_file()

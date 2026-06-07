@@ -23,12 +23,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     sub.add_parser("gui", help="Launch the PySide6 GUI.")
+    sub.add_parser("doctor", help="Run pre-show health checks and print a report.")
 
     vc = sub.add_parser("voice-clone", help="Run the voice-clone pipeline.")
     vc.add_argument(
         "--dry-run",
         action="store_true",
         help="Skip ElevenLabs API calls; write placeholders instead.",
+    )
+    vc.add_argument(
+        "--volunteer",
+        default="volunteer",
+        help="Label for the volunteer whose voice is cloned.",
+    )
+    vc.add_argument(
+        "--i-consent",
+        action="store_true",
+        help="Operator attests the volunteer consented to being recorded and cloned (required).",
+    )
+    vc.add_argument(
+        "--retention",
+        choices=("keep", "ephemeral", "delete_after_show"),
+        default="keep",
+        help="Retention policy for the cloned voice.",
     )
 
     sg = sub.add_parser("script-gen", help="Generate a Shakespeare-style scene.")
@@ -59,14 +76,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_doctor(cfg: AppConfig) -> int:
+    from hamlet_ai.doctor import format_report, run_checks
+
+    ensure_dirs(cfg)
+    report = run_checks(cfg)
+    print(format_report(report))
+    return report.exit_code
+
+
 def _run_voice_clone(args: argparse.Namespace, cfg: AppConfig) -> int:
+    from hamlet_ai.consent import ConsentNotProvided, new_consent
     from hamlet_ai.core.voice_clone.pipeline import run_show
 
     if args.dry_run:
         cfg.dry_run = True
     ensure_dirs(cfg)
+
+    if not args.i_consent:
+        print(
+            "❌ voice-clone requires --i-consent: the operator must attest that the "
+            "volunteer consented to being recorded and cloned.",
+            file=sys.stderr,
+        )
+        return 2
+    consent = new_consent(args.volunteer, args.retention)
+
     try:
-        run_show(cfg)
+        run_show(cfg, consent=consent)
+    except ConsentNotProvided as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
     except (FileNotFoundError, RuntimeError, TimeoutError) as e:
         print(f"❌ voice-clone failed: {e}", file=sys.stderr)
         return 1
@@ -211,6 +251,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "gui":
         from hamlet_ai.gui.app import run as run_gui
         return run_gui()
+
+    if args.command == "doctor":
+        return _run_doctor(cfg)
 
     if args.command == "voice-clone":
         return _run_voice_clone(args, cfg)

@@ -119,3 +119,129 @@ def test_voiceentry_new_helper_sets_iso_timestamp():
         now=now,
     )
     assert e.created_at == "2026-06-07T19:30:42+00:00"
+
+
+# ---------- Step 4: consent + retention schema ----------------------------
+
+def test_voiceentry_consent_fields_default_safely():
+    e = _entry("v1", "Burt", "2026-06-07T19:00:00+00:00")
+    assert e.consent_confirmed is False
+    assert e.consent_timestamp is None
+    assert e.retention_policy == "keep"
+    assert e.remote_deleted is False
+    assert e.provider_metadata == {}
+
+
+def test_voiceentry_new_carries_consent_metadata():
+    e = VoiceEntry.new(
+        voice_id="v1",
+        label="Burt",
+        sample_path="/tmp/b.mp3",
+        sample_filename="b.mp3",
+        consent_confirmed=True,
+        consent_timestamp="2026-06-07T19:00:00+00:00",
+        retention_policy="ephemeral",
+        provider_metadata={"model_id": "eleven_v3"},
+    )
+    assert e.consent_confirmed is True
+    assert e.retention_policy == "ephemeral"
+    assert e.provider_metadata["model_id"] == "eleven_v3"
+
+
+def test_consent_fields_round_trip_through_disk(tmp_path):
+    lib = VoiceLibrary(tmp_path / "voices.json")
+    lib.add(
+        VoiceEntry.new(
+            voice_id="v1",
+            label="Burt",
+            sample_path="/tmp/b.mp3",
+            sample_filename="b.mp3",
+            consent_confirmed=True,
+            retention_policy="delete_after_show",
+        )
+    )
+    reloaded = lib.get("v1")
+    assert reloaded.consent_confirmed is True
+    assert reloaded.retention_policy == "delete_after_show"
+
+
+def test_load_tolerates_old_entries_without_new_fields(tmp_path):
+    path = tmp_path / "voices.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "voice_id": "v1",
+                    "label": "Legacy",
+                    "created_at": "2026-06-07T19:00:00+00:00",
+                    "sample_path": "/tmp/v1.mp3",
+                    "sample_filename": "v1.mp3",
+                }
+            ]
+        )
+    )
+    lib = VoiceLibrary(path)
+    e = lib.get("v1")
+    assert e is not None
+    assert e.consent_confirmed is False
+    assert e.retention_policy == "keep"
+
+
+# ---------- Step 4: delete + sweep ----------------------------------------
+
+class _FakeClient:
+    def __init__(self):
+        self.deleted: list[str] = []
+
+    def delete_voice(self, voice_id):
+        self.deleted.append(voice_id)
+        return True
+
+
+def test_delete_local_removes_entry(tmp_path):
+    lib = VoiceLibrary(tmp_path / "voices.json")
+    lib.add(_entry("v1", "Burt", "2026-06-07T19:00:00+00:00"))
+    assert lib.delete_local("v1") is True
+    assert lib.get("v1") is None
+
+
+def test_delete_remote_calls_client_and_marks_flag(tmp_path):
+    lib = VoiceLibrary(tmp_path / "voices.json")
+    lib.add(_entry("v1", "Burt", "2026-06-07T19:00:00+00:00"))
+    client = _FakeClient()
+    assert lib.delete_remote("v1", client) is True
+    assert client.deleted == ["v1"]
+    # Entry stays but is flagged.
+    assert lib.get("v1").remote_deleted is True
+
+
+def test_delete_both_invokes_remote_then_local(tmp_path):
+    lib = VoiceLibrary(tmp_path / "voices.json")
+    lib.add(_entry("v1", "Burt", "2026-06-07T19:00:00+00:00"))
+    client = _FakeClient()
+    assert lib.delete_both("v1", client) is True
+    assert client.deleted == ["v1"]
+    assert lib.get("v1") is None
+
+
+def test_sweep_expired_removes_ephemeral_and_old_delete_after_show(tmp_path):
+    from hamlet_ai.config import RetentionSettings
+
+    lib = VoiceLibrary(tmp_path / "voices.json")
+    now = datetime(2026, 6, 7, 12, 0, 0, tzinfo=timezone.utc)
+    # keep → never expires
+    lib.add(VoiceEntry.new("keepme", "K", "/t/k.mp3", "k.mp3", retention_policy="keep", now=now))
+    # ephemeral → always expires
+    lib.add(VoiceEntry.new("eph", "E", "/t/e.mp3", "e.mp3", retention_policy="ephemeral", now=now))
+    # delete_after_show created 48h ago → expired (TTL 24h)
+    old = now - timedelta(hours=48)
+    lib.add(VoiceEntry.new("old", "O", "/t/o.mp3", "o.mp3", retention_policy="delete_after_show", now=old))
+    # delete_after_show created 1h ago → not yet expired
+    recent = now - timedelta(hours=1)
+    lib.add(VoiceEntry.new("fresh", "F", "/t/f.mp3", "f.mp3", retention_policy="delete_after_show", now=recent))
+
+    client = _FakeClient()
+    removed = lib.sweep_expired(now, RetentionSettings(), client=client)
+    assert set(removed) == {"eph", "old"}
+    assert {e.voice_id for e in lib.load()} == {"keepme", "fresh"}
+    assert set(client.deleted) == {"eph", "old"}

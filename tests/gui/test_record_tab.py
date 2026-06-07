@@ -225,3 +225,25 @@ def test_level_signal_pipes_to_meter(qtbot, cfg):
     qtbot.addWidget(tab)
     rec.level_changed.emit(0.5)
     assert tab.level_meter.value() > 0
+
+
+# ---------- Step 12: mic check -------------------------------------------
+
+def test_mic_check_reports_rms(qtbot, cfg):
+    tab = RecordTab(cfg, recorder=FakeRecorder())
+    qtbot.addWidget(tab)
+    rms = tab.mic_check(probe=lambda: 0.42)
+    assert rms == 0.42
+    assert "0.42" in tab.status_label.text()
+
+
+def test_mic_check_handles_denied(qtbot, cfg):
+    tab = RecordTab(cfg, recorder=FakeRecorder())
+    qtbot.addWidget(tab)
+
+    def boom():
+        raise OSError("permission denied")
+
+    rms = tab.mic_check(probe=boom)
+    assert rms is None
+    assert "failed" in tab.status_label.text().lower()

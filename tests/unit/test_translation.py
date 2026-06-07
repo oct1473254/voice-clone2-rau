@@ -96,3 +96,59 @@ def test_translate_supports_other_target_language():
         clients=LLMClients(anthropic_factory=lambda _: StubAnthropic()),
     )
     assert "French" in captured["messages"][0]["content"]
+
+
+# ---------- Step 6: per-line translate_scene ------------------------------
+
+def _scene_cfg():
+    cfg = AppConfig()
+    cfg.script_gen.default_provider = "anthropic"
+    cfg.anthropic_api_key = "an-key"
+    return cfg
+
+
+def test_translate_scene_preserves_speaker_labels_and_line_ids():
+    from hamlet_ai.core.script_gen.line_splitter import split_script
+    from hamlet_ai.core.script_gen.translation import translate_scene
+
+    parsed = split_script("HAMLET: To be.\nGERTRUDE: Speak son.")
+
+    class StubAnthropic:
+        def messages_create(self, **kwargs):
+            # Return same count, translated dialogue, labels preserved.
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="1. HAMLET: Sein.\n2. GERTRUDE: Sprich Sohn.")]
+            )
+
+    out = translate_scene(
+        parsed,
+        _scene_cfg(),
+        clients=LLMClients(anthropic_factory=lambda _: StubAnthropic()),
+    )
+    assert [l.character for l in out.lines] == [l.character for l in parsed.lines]
+    assert [l.line_id for l in out.lines] == [l.line_id for l in parsed.lines]
+    assert out.lines[0].dialogue == "Sein."
+    assert out.lines[1].dialogue == "Sprich Sohn."
+
+
+def test_translate_scene_raises_on_count_mismatch():
+    from hamlet_ai.core.script_gen.line_splitter import split_script
+    from hamlet_ai.core.script_gen.translation import (
+        TranslationCountMismatch,
+        translate_scene,
+    )
+
+    parsed = split_script("HAMLET: One.\nGERTRUDE: Two.")
+
+    class StubAnthropic:
+        def messages_create(self, **kwargs):
+            return SimpleNamespace(content=[SimpleNamespace(text="1. HAMLET: Eins.")])
+
+    import pytest
+
+    with pytest.raises(TranslationCountMismatch):
+        translate_scene(
+            parsed,
+            _scene_cfg(),
+            clients=LLMClients(anthropic_factory=lambda _: StubAnthropic()),
+        )

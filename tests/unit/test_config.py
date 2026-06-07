@@ -8,6 +8,8 @@ import pytest
 
 from hamlet_ai.config import (
     AppConfig,
+    ProviderHealth,
+    RetentionSettings,
     ScriptGenSettings,
     VoiceCloneSettings,
     default_config,
@@ -165,6 +167,50 @@ def test_ensure_dirs_idempotent(tmp_path):
     assert cfg.voice_clone.script_file.parent.is_dir()
     assert cfg.script_gen.base_dir.is_dir()
     assert cfg.script_gen.workspace_dir.is_dir()
+
+
+def test_default_show_mode_and_retention_defaults():
+    cfg = default_config(settings_path=Path("/no/such/path.json"))
+    assert cfg.show_mode is False
+    assert cfg.show_profile == "default"
+    assert isinstance(cfg.retention, RetentionSettings)
+    assert cfg.retention.ephemeral_show_mode is False
+    assert cfg.retention.delete_after_show_ttl_hours == 24.0
+    assert cfg.provider_health == {}
+
+
+def test_show_mode_and_retention_round_trip(tmp_path, monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    settings = tmp_path / "settings.json"
+    cfg = AppConfig()
+    cfg.show_mode = True
+    cfg.show_profile = "wember-night"
+    cfg.retention.ephemeral_show_mode = True
+    cfg.retention.sample_ttl_hours = 6.0
+    cfg.provider_health = {
+        "anthropic": ProviderHealth(status="ok", last_tested="2026-06-06T00:00:00+00:00", message="pong")
+    }
+    save_config(cfg, settings_path=settings)
+
+    loaded = default_config(settings_path=settings)
+    assert loaded.show_mode is True
+    assert loaded.show_profile == "wember-night"
+    assert isinstance(loaded.retention, RetentionSettings)
+    assert loaded.retention.ephemeral_show_mode is True
+    assert loaded.retention.sample_ttl_hours == 6.0
+    assert isinstance(loaded.provider_health["anthropic"], ProviderHealth)
+    assert loaded.provider_health["anthropic"].status == "ok"
+    assert loaded.provider_health["anthropic"].message == "pong"
+
+
+def test_overrides_ignore_unknown_retention_keys(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"retention": {"sample_ttl_hours": 3.0, "bogus_key": 99}})
+    )
+    cfg = default_config(settings_path=settings)
+    assert cfg.retention.sample_ttl_hours == 3.0
+    assert not hasattr(cfg.retention, "bogus_key")
 
 
 def test_importing_config_has_no_side_effects(tmp_path, monkeypatch):

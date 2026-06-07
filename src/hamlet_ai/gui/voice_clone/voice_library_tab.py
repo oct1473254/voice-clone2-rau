@@ -20,7 +20,7 @@ from hamlet_ai.core.voice_clone.voice_library import VoiceEntry, VoiceLibrary
 
 
 class _VoiceLibraryModel(QAbstractTableModel):
-    HEADERS = ("Label", "Voice ID", "Created", "Sample")
+    HEADERS = ("Label", "Voice ID", "Created", "Sample", "Consent", "Retention", "Remote")
 
     def __init__(self, entries: list[VoiceEntry], parent=None):
         super().__init__(parent)
@@ -41,7 +41,15 @@ class _VoiceLibraryModel(QAbstractTableModel):
         if not index.isValid() or role != Qt.DisplayRole:
             return None
         e = self.entries[index.row()]
-        return (e.label, e.voice_id, e.created_at, e.sample_filename)[index.column()]
+        return (
+            e.label,
+            e.voice_id,
+            e.created_at,
+            e.sample_filename,
+            "✓" if e.consent_confirmed else "—",
+            e.retention_policy,
+            "deleted" if e.remote_deleted else "live",
+        )[index.column()]
 
     def entry_at(self, row: int) -> VoiceEntry:
         return self.entries[row]
@@ -56,10 +64,17 @@ class VoiceLibraryTab(QWidget):
     active_voice_changed = Signal(str)  # voice_id
     play_requested = Signal(object)  # Path
 
-    def __init__(self, cfg: AppConfig, library: VoiceLibrary | None = None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        cfg: AppConfig,
+        library: VoiceLibrary | None = None,
+        client_factory=None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.cfg = cfg
         self.library = library or VoiceLibrary(cfg.voice_clone.voice_library_path)
+        self.client_factory = client_factory  # () -> client; None → build from cfg
         self.active_voice_id: str | None = None
 
         layout = QVBoxLayout(self)
@@ -81,9 +96,18 @@ class VoiceLibraryTab(QWidget):
         self.play_btn = QPushButton("Play Sample")
         self.play_btn.clicked.connect(self._on_play)
         row.addWidget(self.play_btn)
-        self.delete_btn = QPushButton("Delete")
+        self.delete_btn = QPushButton("Delete (local)")
         self.delete_btn.clicked.connect(self._on_delete)
         row.addWidget(self.delete_btn)
+        self.delete_remote_btn = QPushButton("Delete (local + ElevenLabs)")
+        self.delete_remote_btn.clicked.connect(self._on_delete_remote)
+        row.addWidget(self.delete_remote_btn)
+        self.mark_ephemeral_btn = QPushButton("Mark Ephemeral")
+        self.mark_ephemeral_btn.clicked.connect(self._on_mark_ephemeral)
+        row.addWidget(self.mark_ephemeral_btn)
+        self.sweep_btn = QPushButton("Delete expired clones now")
+        self.sweep_btn.clicked.connect(self._on_sweep)
+        row.addWidget(self.sweep_btn)
         layout.addLayout(row)
 
     def refresh(self) -> None:
@@ -125,8 +149,67 @@ class VoiceLibraryTab(QWidget):
         if row is None:
             return
         entry = self.model.entry_at(row)
-        self.library.remove(entry.voice_id)
-        if self.active_voice_id == entry.voice_id:
+        self.library.delete_local(entry.voice_id)
+        self._forget_if_active(entry.voice_id)
+        self.refresh()
+
+    def _build_client(self):
+        if self.client_factory is not None:
+            return self.client_factory()
+        from hamlet_ai.core.elevenlabs import ElevenLabsClient
+
+        if not self.cfg.elevenlabs_api_key:
+            raise RuntimeError("ELEVENLABS_API_KEY not set; cannot delete remote voice.")
+        return ElevenLabsClient(
+            api_key=self.cfg.elevenlabs_api_key,
+            timeout=self.cfg.voice_clone.api_timeout_seconds,
+        )
+
+    @Slot()
+    def _on_delete_remote(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        entry = self.model.entry_at(row)
+        try:
+            client = self._build_client()
+            self.library.delete_both(entry.voice_id, client)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Remote delete failed", str(e))
+            return
+        self._forget_if_active(entry.voice_id)
+        self.refresh()
+
+    @Slot()
+    def _on_mark_ephemeral(self) -> None:
+        from dataclasses import replace
+
+        row = self._selected_row()
+        if row is None:
+            return
+        entry = self.model.entry_at(row)
+        self.library.add(replace(entry, retention_policy="ephemeral"))
+        self.refresh()
+
+    @Slot()
+    def _on_sweep(self) -> None:
+        from datetime import datetime, timezone
+
+        client = None
+        if self.cfg.elevenlabs_api_key or self.client_factory is not None:
+            try:
+                client = self._build_client()
+            except Exception:  # noqa: BLE001 — sweep can still drop local entries
+                client = None
+        removed = self.library.sweep_expired(
+            datetime.now(timezone.utc), self.cfg.retention, client=client
+        )
+        QMessageBox.information(
+            self, "Sweep complete", f"Removed {len(removed)} expired clone(s)."
+        )
+        self.refresh()
+
+    def _forget_if_active(self, voice_id: str) -> None:
+        if self.active_voice_id == voice_id:
             self.active_voice_id = None
             self.active_label.setText("Active voice: (none)")
-        self.refresh()

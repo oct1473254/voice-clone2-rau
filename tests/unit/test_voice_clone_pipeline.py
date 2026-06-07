@@ -220,9 +220,96 @@ def test_generate_lines_continues_on_per_line_failure(cfg):
     assert len(written) == 2
 
 
-# ---------- run_show -------------------------------------------------------
+# ---------- run_show (sequential, RunFolder-based) -------------------------
+
+def _consent():
+    from hamlet_ai.consent import new_consent
+
+    return new_consent("Audience Burt", "keep")
+
 
 def test_run_show_dry_run_end_to_end(dry_cfg, fake_clone_txt, fake_sample_audio):
-    pipeline.run_show(dry_cfg, log_fn=lambda *_: None)
+    pipeline.run_show(dry_cfg, consent=_consent(), log_fn=lambda *_: None)
     out_files = sorted(p.name for p in dry_cfg.voice_clone.lines_dir.iterdir())
     assert out_files == ["ghost_00_sample.mp3", "ghost_01_shakespeare.mp3", "ghost_02_modern.mp3"]
+
+
+def test_run_show_requires_consent(dry_cfg, fake_clone_txt, fake_sample_audio):
+    from hamlet_ai.consent import ConsentNotProvided
+
+    with pytest.raises(ConsentNotProvided):
+        pipeline.run_show(dry_cfg, consent=None, log_fn=lambda *_: None)
+    # Nothing should have been written into LINES/ without consent.
+    assert not any(dry_cfg.voice_clone.lines_dir.iterdir())
+
+
+def test_run_show_does_not_move_current_sample(dry_cfg, fake_clone_txt, fake_sample_audio):
+    """The volunteer sample must remain in SAMPLE/ after the run (no race)."""
+    pipeline.run_show(dry_cfg, consent=_consent(), log_fn=lambda *_: None)
+    assert fake_sample_audio.is_file(), "SAMPLE/ file was moved out from under the clone"
+
+
+def test_run_show_creates_run_folder_with_metadata(dry_cfg, fake_clone_txt, fake_sample_audio):
+    run = pipeline.run_show(dry_cfg, consent=_consent(), log_fn=lambda *_: None)
+    assert run.root.is_dir()
+    assert run.metadata_path.is_file()
+    meta = run.read_metadata()
+    assert meta["voice_id"] == "dry_run_voice_id_12345"
+    assert meta["consent"]["volunteer_label"] == "Audience Burt"
+    assert meta["consent"]["confirmed_by_operator"] is True
+    # The run's own sample copy exists too.
+    assert any(run.sample_dir.iterdir())
+
+
+def test_run_show_records_voice_in_library(dry_cfg, fake_clone_txt, fake_sample_audio):
+    from hamlet_ai.core.voice_clone.voice_library import VoiceLibrary
+
+    pipeline.run_show(dry_cfg, consent=_consent(), log_fn=lambda *_: None)
+    lib = VoiceLibrary(dry_cfg.voice_clone.voice_library_path)
+    entries = lib.list()
+    assert len(entries) == 1
+    assert entries[0].voice_id == "dry_run_voice_id_12345"
+    assert entries[0].label == "Audience Burt"
+
+
+def test_run_show_archives_previous_lines(dry_cfg, fake_clone_txt, fake_sample_audio):
+    # Seed an existing LINES/ file from a "previous" show.
+    prev = dry_cfg.voice_clone.lines_dir / "ghost_old.mp3"
+    prev.write_bytes(b"old")
+    pipeline.run_show(dry_cfg, consent=_consent(), log_fn=lambda *_: None)
+    # Old file is gone from LINES/ but preserved somewhere in ARCHIVE/.
+    assert not (dry_cfg.voice_clone.lines_dir / "ghost_old.mp3").is_file()
+    archived = list(dry_cfg.voice_clone.archive_dir.rglob("ghost_old.mp3"))
+    assert archived, "previous LINES/ content was not archived"
+
+
+# ---------- restore_last_good ---------------------------------------------
+
+def test_restore_last_good_copies_archive_into_lines(cfg):
+    archive_sub = cfg.voice_clone.archive_dir / "20240101_000000"
+    archive_sub.mkdir(parents=True)
+    (archive_sub / "ghost_00.mp3").write_bytes(b"a")
+    (archive_sub / "ghost_01.mp3").write_bytes(b"b")
+
+    restored = pipeline.restore_last_good(cfg, log_fn=lambda *_: None)
+    names = sorted(p.name for p in restored)
+    assert names == ["ghost_00.mp3", "ghost_01.mp3"]
+    assert (cfg.voice_clone.lines_dir / "ghost_00.mp3").read_bytes() == b"a"
+    # Archive is left intact (copy, not move).
+    assert (archive_sub / "ghost_00.mp3").is_file()
+
+
+def test_restore_last_good_picks_most_recent(cfg):
+    older = cfg.voice_clone.archive_dir / "20240101_000000"
+    newer = cfg.voice_clone.archive_dir / "20250101_000000"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    (older / "x.mp3").write_bytes(b"old")
+    (newer / "y.mp3").write_bytes(b"new")
+    restored = pipeline.restore_last_good(cfg, log_fn=lambda *_: None)
+    assert [p.name for p in restored] == ["y.mp3"]
+
+
+def test_restore_last_good_no_archive_raises(cfg):
+    with pytest.raises(FileNotFoundError):
+        pipeline.restore_last_good(cfg, log_fn=lambda *_: None)

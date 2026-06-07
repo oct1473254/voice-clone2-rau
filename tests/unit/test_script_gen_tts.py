@@ -10,13 +10,15 @@ from hamlet_ai.core.elevenlabs import ElevenLabsClient
 from hamlet_ai.core.script_gen.tts import synthesize_line
 
 
-def test_dry_run_writes_placeholder(dry_cfg, tmp_path):
+def test_dry_run_writes_playable_silent_audio(dry_cfg, tmp_path):
     out = tmp_path / "001-HAMLET.mp3"
     result = synthesize_line(
         dry_cfg, text="Words.", voice_id="vid", output_path=out, log_fn=lambda *_: None
     )
     assert result == out
-    assert "DRY RUN" in out.read_text(encoding="utf-8")
+    head = out.read_bytes()[:4]
+    # Real MP3 (or WAV fallback) — both are valid audio, not text.
+    assert head.startswith(b"ID3") or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xfa") or head == b"RIFF"
 
 
 def test_real_run_writes_audio_bytes(cfg, tmp_path):

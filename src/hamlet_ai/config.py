@@ -15,12 +15,37 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
 
 SETTINGS_PATH_DEFAULT = Path.home() / ".config" / "hamlet-ai" / "settings.json"
+
+
+@dataclass
+class RetentionSettings:
+    """How long cloned-voice artifacts live before the sweep removes them.
+
+    ``ephemeral_show_mode`` is the global default-ephemeral flag: when True,
+    every new clone is created with ``retention_policy="ephemeral"`` and is
+    deleted (local + remote) at end of session.
+    """
+
+    sample_ttl_hours: float = 24.0
+    archive_ttl_hours: float = 720.0  # 30 days
+    generated_ttl_hours: float = 24.0
+    delete_after_show_ttl_hours: float = 24.0
+    ephemeral_show_mode: bool = False
+
+
+@dataclass
+class ProviderHealth:
+    """Last-known connectivity for an LLM provider (set by ``test_connection``)."""
+
+    status: str = "unknown"  # "ok" | "failed" | "unknown"
+    last_tested: str | None = None  # ISO 8601 UTC
+    message: str = ""
 
 
 @dataclass
@@ -30,6 +55,7 @@ class VoiceCloneSettings:
     recording_samplerate: int = 48000
     clone_poll_interval: float = 5.0
     clone_timeout: float = 120.0
+    api_timeout_seconds: float = 30.0
     model_id: str = "eleven_v3"
     voice_settings: dict[str, float] = field(
         default_factory=lambda: {
@@ -99,6 +125,10 @@ class AppConfig:
     voice_clone: VoiceCloneSettings = field(default_factory=VoiceCloneSettings)
     script_gen: ScriptGenSettings = field(default_factory=ScriptGenSettings)
     dry_run: bool = True
+    show_mode: bool = False
+    show_profile: str = "default"
+    retention: RetentionSettings = field(default_factory=RetentionSettings)
+    provider_health: dict[str, ProviderHealth] = field(default_factory=dict)
     elevenlabs_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
@@ -106,28 +136,27 @@ class AppConfig:
 
 # ---------- serialization helpers -----------------------------------------
 
+def _coerce(value: Any) -> Any:
+    """Recursively convert a value to JSON-safe primitives.
+
+    Handles Paths, nested dataclasses (settings groups, RetentionSettings,
+    ProviderHealth), dicts (incl. dict-of-dataclass like ``provider_health``),
+    and lists.
+    """
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _coerce(getattr(value, f.name)) for f in fields(value)}
+    if isinstance(value, dict):
+        return {k: _coerce(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_coerce(v) for v in value]
+    return value
+
+
 def _to_dict(cfg: AppConfig) -> dict[str, Any]:
     """Serialize an AppConfig to JSON-safe primitives (Paths → strings)."""
-
-    def coerce(value: Any) -> Any:
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, dict):
-            return {k: coerce(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [coerce(v) for v in value]
-        return value
-
-    payload: dict[str, Any] = {}
-    for f in fields(cfg):
-        value = getattr(cfg, f.name)
-        if isinstance(value, (VoiceCloneSettings, ScriptGenSettings)):
-            payload[f.name] = {
-                sub.name: coerce(getattr(value, sub.name)) for sub in fields(value)
-            }
-        else:
-            payload[f.name] = coerce(value)
-    return payload
+    return {f.name: _coerce(getattr(cfg, f.name)) for f in fields(cfg)}
 
 
 def _apply_overrides(cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
@@ -156,14 +185,37 @@ def _apply_overrides(cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
             )
     new_script = replace(cfg.script_gen, **sg_overrides) if sg_overrides else cfg.script_gen
 
+    # Fields that need bespoke reconstruction into their dataclass types.
+    structured = {"voice_clone", "script_gen", "retention", "provider_health"}
+
     top_overrides: dict[str, Any] = {}
     for f in fields(cfg):
-        if f.name in {"voice_clone", "script_gen"}:
+        if f.name in structured:
             continue
         if f.name in data:
             top_overrides[f.name] = data[f.name]
 
+    if "retention" in data and isinstance(data["retention"], dict):
+        top_overrides["retention"] = _build_dataclass(
+            RetentionSettings, data["retention"], cfg.retention
+        )
+
+    if "provider_health" in data and isinstance(data["provider_health"], dict):
+        health: dict[str, ProviderHealth] = {}
+        for name, raw in data["provider_health"].items():
+            if isinstance(raw, dict):
+                health[name] = _build_dataclass(ProviderHealth, raw, ProviderHealth())
+        top_overrides["provider_health"] = health
+
     return replace(cfg, voice_clone=new_voice, script_gen=new_script, **top_overrides)
+
+
+def _build_dataclass(cls: type, data: dict[str, Any], default: Any) -> Any:
+    """Construct ``cls`` from ``data``, ignoring unknown keys and filling the
+    rest from ``default``."""
+    known = {f.name for f in fields(cls)}
+    overrides = {k: v for k, v in data.items() if k in known}
+    return replace(default, **overrides)
 
 
 # ---------- public API -----------------------------------------------------

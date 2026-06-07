@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from hamlet_ai.config import AppConfig
+from hamlet_ai.core.script_gen import llm as llm_mod
 from hamlet_ai.core.script_gen.llm import (
     LLMClients,
     LLMError,
@@ -155,3 +157,75 @@ def test_generate_dispatches_to_ollama_via_clients():
 def test_generate_unknown_provider_raises():
     with pytest.raises(ValueError):
         generate("p", "made-up", "m")
+
+
+# ---------- test_connection (Step 5) --------------------------------------
+
+def _cfg_no_keys():
+    return AppConfig(anthropic_api_key="an", openai_api_key="op")
+
+
+def test_test_connection_anthropic_ok_records_health():
+    cfg = _cfg_no_keys()
+
+    class StubAnthropic:
+        def messages_create(self, *, model, max_tokens, temperature, system, messages):
+            assert max_tokens == 1
+            return SimpleNamespace(content=[SimpleNamespace(text="pong")])
+
+    ok, msg = llm_mod.test_connection(
+        "anthropic", cfg, clients=LLMClients(anthropic_factory=lambda k: StubAnthropic())
+    )
+    assert ok is True
+    assert "anthropic" in msg.lower()
+    assert cfg.provider_health["anthropic"].status == "ok"
+    assert cfg.provider_health["anthropic"].last_tested is not None
+
+
+def test_test_connection_openai_failure_is_graceful():
+    cfg = _cfg_no_keys()
+
+    class StubOpenAI:
+        def chat_create(self, **_):
+            raise RuntimeError("401 Unauthorized")
+
+    ok, msg = llm_mod.test_connection(
+        "openai", cfg, clients=LLMClients(openai_factory=lambda k: StubOpenAI())
+    )
+    assert ok is False
+    assert "openai" in msg.lower()
+    assert cfg.provider_health["openai"].status == "failed"
+
+
+def test_test_connection_ollama_ok_uses_list():
+    cfg = _cfg_no_keys()
+    called = {}
+
+    class StubOllama:
+        def chat(self, **_):  # should not be used
+            raise AssertionError("chat must not be called in test_connection")
+
+        def list(self):
+            called["list"] = True
+            return {"models": []}
+
+    ok, msg = llm_mod.test_connection(
+        "ollama", cfg, clients=LLMClients(ollama_factory=lambda: StubOllama())
+    )
+    assert ok is True
+    assert called.get("list") is True
+
+
+def test_test_connection_ollama_daemon_down_specific_message():
+    cfg = _cfg_no_keys()
+
+    class StubOllama:
+        def list(self):
+            raise ConnectionError("[Errno 61] Connection refused")
+
+    ok, msg = llm_mod.test_connection(
+        "ollama", cfg, clients=LLMClients(ollama_factory=lambda: StubOllama())
+    )
+    assert ok is False
+    assert "daemon" in msg.lower()
+    assert cfg.provider_health["ollama"].status == "failed"

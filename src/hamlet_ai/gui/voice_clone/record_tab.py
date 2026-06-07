@@ -66,6 +66,9 @@ class RecordTab(QWidget):
         layout.addLayout(meter_row)
 
         button_row = QHBoxLayout()
+        self.mic_check_button = QPushButton("Mic check")
+        self.mic_check_button.clicked.connect(self._on_mic_check_clicked)
+        button_row.addWidget(self.mic_check_button)
         self.record_button = QPushButton("Record")
         self.record_button.clicked.connect(self._on_record_clicked)
         button_row.addWidget(self.record_button)
@@ -116,6 +119,46 @@ class RecordTab(QWidget):
         self.recorder.error.connect(self._on_recorder_error)
 
     # ---------- slots ----------
+    # ---------- mic check ----------
+    def mic_check(self, probe=None) -> float | None:
+        """Open a brief input stream and report RMS. Returns RMS, or None if denied.
+
+        ``probe`` is injectable for tests; the default reads ~0.5s from the
+        default input device via sounddevice. This method never shows a modal —
+        the button handler surfaces guidance so the core logic stays headless.
+        """
+        try:
+            rms = probe() if probe is not None else self._default_mic_probe()
+        except Exception as e:  # noqa: BLE001 — mic likely denied/unavailable
+            self.status_label.setText(f"Mic check failed: {e}")
+            self._last_mic_error = str(e)
+            return None
+        self.status_label.setText(f"Mic OK — level {rms:.3f}")
+        self._last_mic_error = None
+        return rms
+
+    def _default_mic_probe(self) -> float:
+        import numpy as np
+        import sounddevice as sd
+
+        seconds = 0.5
+        sr = self.cfg.voice_clone.recording_samplerate
+        frames = sd.rec(int(seconds * sr), samplerate=sr, channels=1)
+        sd.wait()
+        return float(np.sqrt(np.mean(np.square(frames))))
+
+    @Slot()
+    def _on_mic_check_clicked(self) -> None:
+        rms = self.mic_check()
+        if rms is None:
+            QMessageBox.warning(
+                self,
+                "Microphone unavailable",
+                "Could not read from the microphone. On macOS, grant access in "
+                "System Settings → Privacy & Security → Microphone, then retry.\n\n"
+                f"Details: {getattr(self, '_last_mic_error', '')}",
+            )
+
     @Slot()
     def _on_record_clicked(self) -> None:
         if self.recorder.is_recording:

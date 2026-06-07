@@ -91,3 +91,47 @@ def test_write_split_files_skips_rejected_file_when_no_rejects(tmp_path):
     )
     write_split_files(parsed, tmp_path, language="English")
     assert not (tmp_path / "rejected_lines" / "rejected_lines_English.txt").exists()
+
+
+# ---------- Step 6: tolerant splitter -------------------------------------
+
+def test_splitter_handles_colons_in_dialogue():
+    parsed = split_script("HAMLET: To eat: or not.")
+    assert parsed.lines[0].character == "HAMLET"
+    assert parsed.lines[0].dialogue == "To eat: or not."
+
+
+def test_splitter_handles_accented_and_hyphenated_names():
+    script = "JEAN-PAUL: Bonjour.\nÉLODIE: Salut.\nKING'S MESSENGER: Hail."
+    parsed = split_script(script)
+    chars = {line.character for line in parsed.lines}
+    assert chars == {"JEAN-PAUL", "ÉLODIE", "KING'S MESSENGER"}
+
+
+def test_splitter_assigns_stable_line_ids():
+    parsed = split_script("HAMLET: One.\nGERTRUDE: Two.")
+    ids = [line.line_id for line in parsed.lines]
+    assert all(ids)
+    assert len(set(ids)) == len(ids)
+
+
+def test_splitter_marks_spoken_lines():
+    parsed = split_script("HAMLET: Hi.")
+    assert parsed.lines[0].spoken is True
+    assert parsed.lines[0].text_only is False
+
+
+def test_splitter_captures_standalone_stage_directions():
+    parsed = split_script("(Thunder. They exit.)\nHAMLET: Alone at last.")
+    # Direction is not a spoken line.
+    assert [l.character for l in parsed.lines] == ["HAMLET"]
+    assert len(parsed.directions) == 1
+    assert parsed.directions[0].text_only is True
+    assert parsed.directions[0].spoken is False
+
+
+def test_splitter_rejected_details_have_reason_codes():
+    parsed = split_script("random line that doesn't match\nHAMLET: ")
+    reasons = {r.reason for r in parsed.rejected_details}
+    assert "no_colon" in reasons
+    assert "empty_dialogue" in reasons

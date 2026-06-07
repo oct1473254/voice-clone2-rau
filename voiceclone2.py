@@ -73,9 +73,20 @@ def generate_lines(voice_id, script_lines, log_fn: Callable[[str], None] = print
 
 
 def main() -> None:
+    from hamlet_ai.consent import new_consent
+
     cfg = _cfg()
     ensure_dirs(cfg)
-    _pipeline.run_show(cfg)
+    # Cloning now requires explicit consent. Prompt the operator before running.
+    print(
+        "This records the volunteer, uploads the sample to ElevenLabs, creates a "
+        "voice clone, and generates lines in that voice."
+    )
+    answer = input("Has the volunteer consented? Type 'yes' to continue: ").strip().lower()
+    if answer != "yes":
+        raise SystemExit("❌ Consent not confirmed; aborting.")
+    consent = new_consent("volunteer", "keep")
+    _pipeline.run_show(cfg, consent=consent)
 
 
 if __name__ == "__main__":

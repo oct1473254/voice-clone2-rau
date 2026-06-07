@@ -34,6 +34,7 @@ class OpenAILike(Protocol):
 
 class OllamaLike(Protocol):
     def chat(self, *, model: str, messages: list[dict]) -> dict: ...
+    def list(self) -> Any: ...
 
 
 # ---------- Factories (default implementations build real SDK clients) ----
@@ -74,6 +75,9 @@ def _build_ollama() -> OllamaLike:
     class _Adapter:
         def chat(self, *, model, messages):
             return ollama.chat(model=model, messages=messages)
+
+        def list(self):
+            return ollama.list()
 
     return _Adapter()
 
@@ -149,3 +153,88 @@ def generate(
         factory = clients.ollama_factory or _build_ollama
         return generate_with_ollama(prompt, model, factory())
     raise LLMError(f"unknown provider: {provider}")
+
+
+# ---------- Connectivity tests --------------------------------------------
+
+def _is_ollama_down(exc: Exception) -> bool:
+    """Best-effort detection that the Ollama daemon is unreachable."""
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    name = type(exc).__name__
+    text = f"{name}: {exc}".lower()
+    return (
+        "responseerror" in name.lower()
+        or "connection" in text
+        or "refused" in text
+        or "max retries" in text
+    )
+
+
+def test_connection(
+    provider: LLMProvider | str,
+    cfg,
+    *,
+    clients: LLMClients | None = None,
+) -> tuple[bool, str]:
+    """Make a tiny request to confirm the provider is reachable.
+
+    Returns ``(ok, message)`` and records the outcome (status + timestamp) into
+    ``cfg.provider_health[provider]``. Never raises — SDK/connection errors are
+    converted into ``(False, message)``.
+    """
+    provider = LLMProvider(provider)
+    clients = clients or LLMClients()
+    ok = False
+    try:
+        if provider is LLMProvider.ANTHROPIC:
+            factory = clients.anthropic_factory or _build_anthropic
+            client = factory(cfg.anthropic_api_key)
+            client.messages_create(
+                model=cfg.script_gen.models["anthropic"],
+                max_tokens=1,
+                temperature=0,
+                system="",
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            message = "Anthropic reachable."
+            ok = True
+        elif provider is LLMProvider.OPENAI:
+            factory = clients.openai_factory or _build_openai
+            client = factory(cfg.openai_api_key)
+            client.chat_create(
+                model=cfg.script_gen.models["openai"],
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            message = "OpenAI reachable."
+            ok = True
+        elif provider is LLMProvider.OLLAMA:
+            factory = clients.ollama_factory or _build_ollama
+            client = factory()
+            client.list()
+            message = "Ollama daemon reachable."
+            ok = True
+        else:  # pragma: no cover — guarded by the enum
+            message = f"unknown provider: {provider}"
+    except ImportError as e:
+        message = f"{provider.value} SDK not installed: {e}"
+    except Exception as e:  # noqa: BLE001 — surface as (False, message)
+        if provider is LLMProvider.OLLAMA and _is_ollama_down(e):
+            message = "Ollama daemon appears to be down (start it with `ollama serve`)."
+        else:
+            message = f"{provider.value} connection failed: {e}"
+
+    _record_health(cfg, provider, ok, message)
+    return ok, message
+
+
+def _record_health(cfg, provider: LLMProvider, ok: bool, message: str) -> None:
+    from datetime import datetime, timezone
+
+    from hamlet_ai.config import ProviderHealth
+
+    cfg.provider_health[provider.value] = ProviderHealth(
+        status="ok" if ok else "failed",
+        last_tested=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        message=message,
+    )

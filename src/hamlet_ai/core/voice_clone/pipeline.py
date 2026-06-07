@@ -12,13 +12,15 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
 from hamlet_ai.config import AppConfig
+from hamlet_ai.consent import ConsentRecord, require_consent
 from hamlet_ai.core.audio.silent_audio import write_silent_for_extension
 from hamlet_ai.core.elevenlabs import ElevenLabsClient
+from hamlet_ai.core.voice_clone.runs import RunFolder
+from hamlet_ai.core.voice_clone.voice_library import VoiceEntry, VoiceLibrary
 
 
 LogFn = Callable[[str], None]
@@ -98,13 +100,16 @@ def clone_voice(
     cfg: AppConfig,
     log_fn: LogFn = print,
     client: ElevenLabsClient | None = None,
+    sample_dir: Path | None = None,
 ) -> str:
-    """Upload volunteer audio from SAMPLE/ to ElevenLabs IVC and return a voice_id.
+    """Upload volunteer audio to ElevenLabs IVC and return a voice_id.
 
-    ``client`` is injectable for tests; in production it's built from ``cfg.elevenlabs_api_key``.
+    Reads from ``sample_dir`` if given (the safe per-run path), else from the
+    legacy ``cfg.voice_clone.sample_dir``. ``client`` is injectable for tests;
+    in production it's built from ``cfg.elevenlabs_api_key``.
     """
     log_fn("🎤 Starting voice clone...")
-    sample_dir = cfg.voice_clone.sample_dir
+    sample_dir = sample_dir if sample_dir is not None else cfg.voice_clone.sample_dir
 
     if not sample_dir.is_dir():
         raise FileNotFoundError("❌ No audio file found in SAMPLE/")
@@ -127,7 +132,9 @@ def clone_voice(
     if client is None:
         if not cfg.elevenlabs_api_key:
             raise RuntimeError("ELEVENLABS_API_KEY not set; cannot clone voice.")
-        client = ElevenLabsClient(api_key=cfg.elevenlabs_api_key)
+        client = ElevenLabsClient(
+            api_key=cfg.elevenlabs_api_key, timeout=cfg.voice_clone.api_timeout_seconds
+        )
 
     voice_id = client.clone_voice(
         audio_path=str(audio_path), audio_filename=audio_path.name
@@ -153,7 +160,9 @@ def wait_for_voice(
     if client is None:
         if not cfg.elevenlabs_api_key:
             raise RuntimeError("ELEVENLABS_API_KEY not set; cannot poll voice.")
-        client = ElevenLabsClient(api_key=cfg.elevenlabs_api_key)
+        client = ElevenLabsClient(
+            api_key=cfg.elevenlabs_api_key, timeout=cfg.voice_clone.api_timeout_seconds
+        )
 
     elapsed = 0.0
     while elapsed < cfg.voice_clone.clone_timeout:
@@ -201,7 +210,9 @@ def synthesize(
     if client is None:
         if not cfg.elevenlabs_api_key:
             raise RuntimeError("ELEVENLABS_API_KEY not set; cannot synthesize.")
-        client = ElevenLabsClient(api_key=cfg.elevenlabs_api_key)
+        client = ElevenLabsClient(
+            api_key=cfg.elevenlabs_api_key, timeout=cfg.voice_clone.api_timeout_seconds
+        )
 
     audio = client.synthesize(
         voice_id=voice_id,
@@ -222,6 +233,7 @@ def generate_lines(
     log_fn: LogFn = print,
     progress_fn: Callable[[int, int], None] | None = None,
     client: ElevenLabsClient | None = None,
+    output_dir: Path | None = None,
 ) -> list[Path]:
     """Iterate parsed script lines and synthesize each one. Returns paths written."""
     total = len(script_lines)
@@ -231,7 +243,9 @@ def generate_lines(
     for idx, (filename, text) in enumerate(script_lines, 1):
         log_fn(f"   [{idx}/{total}] {filename}")
         try:
-            path = synthesize(cfg, voice_id, text, filename, log_fn=log_fn, client=client)
+            path = synthesize(
+                cfg, voice_id, text, filename, log_fn=log_fn, client=client, output_dir=output_dir
+            )
             written.append(path)
         except Exception as e:  # noqa: BLE001 — keep going on per-line failures, matches legacy behavior
             log_fn(f"   ❌ Error on {filename}: {e}")
@@ -242,33 +256,188 @@ def generate_lines(
     return written
 
 
-def run_show(cfg: AppConfig, log_fn: LogFn = print) -> None:
-    """Reproduce the original ``voiceclone2.main`` orchestration end-to-end."""
+def archive_lines(cfg: AppConfig, log_fn: LogFn = print) -> Path | None:
+    """Archive the *current* ``LINES/`` content into ``ARCHIVE/{prev_ts}/``.
+
+    Unlike the legacy ``cleanup`` this never touches ``SAMPLE/`` — the new flow
+    keeps the volunteer sample where it is. Returns the archive subfolder, or
+    ``None`` if there was nothing to archive.
+    """
+    lines_dir = cfg.voice_clone.lines_dir
+    archive_dir = cfg.voice_clone.archive_dir
+    if not lines_dir.is_dir():
+        return None
+    lines_files = [f for f in lines_dir.iterdir() if not f.name.startswith(".") and f.is_file()]
+    if not lines_files:
+        return None
+
+    oldest = min(lines_files, key=lambda f: f.stat().st_mtime)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(oldest.stat().st_mtime))
+    archive_subfolder = archive_dir / timestamp
+    suffix = 1
+    while archive_subfolder.exists():
+        archive_subfolder = archive_dir / f"{timestamp}_{suffix}"
+        suffix += 1
+    archive_subfolder.mkdir(parents=True, exist_ok=True)
+    log_fn(f"🗂️  Archiving previous LINES/ → ARCHIVE/{archive_subfolder.name}/")
+    for f in lines_files:
+        shutil.move(str(f), str(archive_subfolder / f.name))
+    return archive_subfolder
+
+
+def restore_last_good(
+    cfg: AppConfig,
+    archive_name: str | None = None,
+    log_fn: LogFn = print,
+) -> list[Path]:
+    """Copy an archived run's files back into ``LINES/`` — the show-night rescue.
+
+    ``archive_name`` selects a specific ``ARCHIVE/{ts}/`` subfolder; if omitted,
+    the most recent archive is used. Copies (does not move) so the archive stays
+    intact, one file at a time via atomic ``os.replace``.
+    """
+    archive_dir = cfg.voice_clone.archive_dir
+    lines_dir = cfg.voice_clone.lines_dir
+    if not archive_dir.is_dir():
+        raise FileNotFoundError("❌ No ARCHIVE/ directory to restore from.")
+
+    subfolders = sorted(
+        (d for d in archive_dir.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    if not subfolders:
+        raise FileNotFoundError("❌ No archived runs to restore.")
+
+    if archive_name is not None:
+        chosen = archive_dir / archive_name
+        if not chosen.is_dir():
+            raise FileNotFoundError(f"❌ Archive not found: {archive_name}")
+    else:
+        chosen = subfolders[0]
+
+    lines_dir.mkdir(parents=True, exist_ok=True)
+    log_fn(f"♻️  Restoring LINES/ from ARCHIVE/{chosen.name}/")
+    restored: list[Path] = []
+    for src in sorted(f for f in chosen.iterdir() if f.is_file() and not f.name.startswith(".")):
+        final_path = lines_dir / src.name
+        tmp_path = lines_dir / f".{src.name}.tmp"
+        shutil.copy2(src, tmp_path)
+        os.replace(tmp_path, final_path)
+        restored.append(final_path)
+        log_fn(f"   ♻️  {src.name}")
+    return restored
+
+
+def run_show(
+    cfg: AppConfig,
+    consent: "ConsentRecord | None" = None,
+    log_fn: LogFn = print,
+    client: ElevenLabsClient | None = None,
+    now: float | None = None,
+) -> RunFolder:
+    """Run one voice-clone session safely and sequentially.
+
+    Flow (no concurrent cleanup-during-clone race):
+      1. Require consent.
+      2. Create a fresh RunFolder.
+      3. Copy the supplied sample into the run folder.
+      4. Sequentially clone → wait → write metadata → parse → generate into the
+         run's ``generated_lines/``.
+      5. On success archive the previous ``LINES/`` and swap the run's lines in.
+      6. On failure ``LINES/`` is left untouched.
+
+    Returns the :class:`RunFolder` for the session.
+    """
+    consent = require_consent(consent)
+
     log_fn("\n🎭 HAMLET.AI — VOICE CLONE SCRIPT")
     log_fn("=" * 40)
-    log_fn("\n⚡ Starting concurrent tasks...")
 
-    voice_id: str | None = None
-    script_lines: list[tuple[str, str]] | None = None
+    run = RunFolder.create_for_now(cfg, now=now)
+    run.append_log("run started")
+    log_fn(f"📂 Run folder: {run.root}")
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future_voice = executor.submit(clone_voice, cfg, log_fn)
-        future_cleanup = executor.submit(cleanup, cfg, log_fn)
-        future_script = executor.submit(parse_script, cfg.voice_clone.script_file, log_fn)
+    # Copy the volunteer sample into the run folder (never move it out of SAMPLE/).
+    sample_files = sorted(
+        f for f in cfg.voice_clone.sample_dir.iterdir()
+        if f.is_file() and not f.name.startswith(".")
+    ) if cfg.voice_clone.sample_dir.is_dir() else []
+    if not sample_files:
+        raise FileNotFoundError("❌ No audio file found in SAMPLE/")
+    run.copy_sample_in(sample_files[0])
+    log_fn(f"   📎 Copied sample into run: {sample_files[0].name}")
 
-        for future in as_completed([future_voice, future_cleanup, future_script]):
-            result = future.result()
-            if future is future_voice:
-                voice_id = result  # type: ignore[assignment]
-            elif future is future_script:
-                script_lines = result  # type: ignore[assignment]
+    # Sequential pipeline — clone reads from the run's own sample copy.
+    voice_id = clone_voice(cfg, log_fn=log_fn, client=client, sample_dir=run.sample_dir)
+    voice_id = wait_for_voice(cfg, voice_id, log_fn=log_fn, client=client)
 
-    log_fn("\n🔍 Confirming voice status...")
-    assert voice_id is not None
-    voice_id = wait_for_voice(cfg, voice_id, log_fn=log_fn)
+    run.write_metadata(
+        {
+            "voice_id": voice_id,
+            "consent": consent.to_dict(),
+            "recording_target_seconds": cfg.voice_clone.recording_target_seconds,
+            "model_id": cfg.voice_clone.model_id,
+            "retention_policy": consent.retention_policy,
+            "dry_run": cfg.dry_run,
+        }
+    )
+    run.append_log(f"voice_id={voice_id}")
 
-    assert script_lines is not None
-    generate_lines(cfg, voice_id, script_lines, log_fn=log_fn)
+    script_lines = parse_script(cfg.voice_clone.script_file, log_fn=log_fn)
+    generate_lines(
+        cfg,
+        voice_id,
+        script_lines,
+        log_fn=log_fn,
+        client=client,
+        output_dir=run.generated_lines_dir,
+    )
 
+    # Success: archive the previous LINES/ then swap this run's lines in.
+    archive_lines(cfg, log_fn=log_fn)
+    cfg.voice_clone.lines_dir.mkdir(parents=True, exist_ok=True)
+    generated = sorted(
+        f for f in run.generated_lines_dir.iterdir()
+        if f.is_file() and not f.name.startswith(".")
+    )
+    for src in generated:
+        os.replace(src, cfg.voice_clone.lines_dir / src.name)
+    log_fn(f"   📤 Swapped {len(generated)} files into LINES/")
+
+    # Record the clone in the persistent library.
+    _record_in_library(cfg, voice_id, consent, run)
+
+    run.append_log("run complete")
     log_fn("\n🎭 Done. Files are in LINES/ and ready for QLab.")
     log_fn("=" * 40)
+    return run
+
+
+def _record_in_library(
+    cfg: AppConfig,
+    voice_id: str,
+    consent: "ConsentRecord",
+    run: RunFolder,
+) -> None:
+    """Append the new clone to the VoiceLibrary with its consent metadata."""
+    sample_files = sorted(
+        f for f in run.sample_dir.iterdir() if f.is_file() and not f.name.startswith(".")
+    )
+    sample_path = sample_files[0] if sample_files else run.sample_dir
+    library = VoiceLibrary(cfg.voice_clone.voice_library_path)
+    # Ephemeral show mode forces every new clone to be deleted at end of session.
+    retention_policy = (
+        "ephemeral" if cfg.retention.ephemeral_show_mode else consent.retention_policy
+    )
+    entry = VoiceEntry.new(
+        voice_id=voice_id,
+        label=consent.volunteer_label,
+        sample_path=str(sample_path),
+        sample_filename=sample_path.name,
+        consent_confirmed=consent.confirmed_by_operator,
+        consent_timestamp=consent.confirmed_at,
+        retention_policy=retention_policy,
+        provider_metadata={"model_id": cfg.voice_clone.model_id, "run": run.root.name},
+    )
+    library.add(entry)

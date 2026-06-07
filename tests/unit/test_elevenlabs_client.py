@@ -9,14 +9,20 @@ from hamlet_ai.core.elevenlabs import (
     LIST_VOICES_URL,
     TTS_URL,
     VOICE_DETAIL_URL,
+    AuthError,
+    BadAudioError,
+    BadResponseError,
     ElevenLabsClient,
     ElevenLabsError,
+    RateLimitError,
+    write_audio_atomic,
 )
 
 
 @pytest.fixture
 def client() -> ElevenLabsClient:
-    return ElevenLabsClient(api_key="test-key")
+    # No-op sleep so retry backoff doesn't slow the suite.
+    return ElevenLabsClient(api_key="test-key", sleep_fn=lambda _: None)
 
 
 def test_client_requires_api_key():
@@ -160,3 +166,73 @@ def test_delete_voice_raises_on_error(client):
     )
     with pytest.raises(ElevenLabsError):
         client.delete_voice(voice_id)
+
+
+# ---------- Step 7: hardening ---------------------------------------------
+
+@responses.activate
+def test_specific_exception_classes_by_status(tmp_path, client):
+    audio = tmp_path / "vol.mp3"
+    audio.write_bytes(b"A")
+    responses.add(responses.POST, CLONE_URL, json={"e": "bad"}, status=422)
+    with pytest.raises(BadAudioError):
+        client.clone_voice(str(audio), "vol.mp3")
+
+    responses.add(responses.GET, LIST_VOICES_URL, json={"e": "auth"}, status=401)
+    with pytest.raises(AuthError):
+        client.list_voices()
+
+
+@responses.activate
+def test_retries_then_succeeds_on_500_then_200(client):
+    voice_id = "abc"
+    url = TTS_URL.format(voice_id=voice_id)
+    responses.add(responses.POST, url, json={"e": "boom"}, status=500)
+    responses.add(responses.POST, url, body=b"AUDIO", status=200, content_type="audio/mpeg")
+    audio = client.synthesize(voice_id, "Hi", "eleven_v3", {"stability": 0.5})
+    assert audio == b"AUDIO"
+    assert len(responses.calls) == 2  # retried once
+
+
+@responses.activate
+def test_rate_limit_raises_after_retries(client):
+    voice_id = "abc"
+    url = TTS_URL.format(voice_id=voice_id)
+    responses.add(responses.POST, url, json={"e": "slow down"}, status=429)
+    with pytest.raises(RateLimitError):
+        client.synthesize(voice_id, "Hi", "eleven_v3", {"stability": 0.5})
+    # initial try + 3 retries == 4 calls
+    assert len(responses.calls) == 4
+
+
+@responses.activate
+def test_4xx_not_retried(tmp_path, client):
+    audio = tmp_path / "vol.mp3"
+    audio.write_bytes(b"A")
+    responses.add(responses.POST, CLONE_URL, json={"e": "bad"}, status=422)
+    with pytest.raises(BadAudioError):
+        client.clone_voice(str(audio), "vol.mp3")
+    assert len(responses.calls) == 1  # no retry on 422
+
+
+@responses.activate
+def test_list_voices_bad_schema_raises_bad_response(client):
+    responses.add(responses.GET, LIST_VOICES_URL, json={"nope": []}, status=200)
+    with pytest.raises(BadResponseError):
+        client.list_voices()
+
+
+def test_logging_redacts_api_key():
+    logs: list[str] = []
+    c = ElevenLabsClient(api_key="sk_supersecretkey1234567890", log_fn=logs.append)
+    c._log("using key sk_supersecretkey1234567890 for voice v1")
+    assert logs
+    assert "sk_supersecretkey1234567890" not in logs[0]
+    assert "<REDACTED>" in logs[0]
+
+
+def test_write_audio_atomic_writes_and_cleans_tmp(tmp_path):
+    out = tmp_path / "line.mp3"
+    write_audio_atomic(out, b"\x00MP3")
+    assert out.read_bytes() == b"\x00MP3"
+    assert not list(tmp_path.glob(".*.tmp"))

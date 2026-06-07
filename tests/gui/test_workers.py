@@ -201,8 +201,10 @@ def test_script_gen_tts_worker_progress_and_files(qtbot, worker_cfg, tmp_path):
 # ---------- RunShowWorker -----------------------------------------------
 
 def test_run_show_worker_completes_dry_run(qtbot, worker_cfg, fake_clone_txt_for_worker):
+    from hamlet_ai.consent import new_consent
+
     _sample(worker_cfg)
-    w = workers.RunShowWorker(worker_cfg)
+    w = workers.RunShowWorker(worker_cfg, consent=new_consent("vol", "keep"))
     with qtbot.waitSignal(w.finished, timeout=3000):
         w.run()
     assert (worker_cfg.voice_clone.lines_dir / "ghost_00_sample.mp3").is_file()
@@ -214,3 +216,21 @@ def fake_clone_txt_for_worker(worker_cfg) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("ghost_00_sample.mp3\nHi.\n\nghost_01.mp3\nHello.\n", encoding="utf-8")
     return p
+
+
+# ---------- DoctorWorker --------------------------------------------------
+
+def test_doctor_worker_emits_report(qtbot, worker_cfg, fake_clone_txt_for_worker, monkeypatch):
+    import hamlet_ai.doctor as doctor_mod
+
+    # Keep it hermetic — no network / microphone.
+    monkeypatch.setattr(doctor_mod, "_default_client_factory", lambda c: None)
+    monkeypatch.setattr(doctor_mod, "_default_connection_tester", lambda p, c: (True, "ok"))
+    monkeypatch.setattr(doctor_mod, "_default_audio_probe", lambda: [(0, "Mic")])
+
+    w = workers.DoctorWorker(worker_cfg)
+    received = {}
+    w.finished.connect(lambda report: received.setdefault("report", report))
+    with qtbot.waitSignal(w.finished, timeout=3000):
+        w.run()
+    assert received["report"].results  # produced a report with checks

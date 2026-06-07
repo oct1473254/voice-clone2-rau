@@ -29,12 +29,12 @@ def synthesize_line(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if cfg.dry_run:
-        placeholder = (
-            f"DRY RUN — would synthesize with voice {voice_id}\n"
-            f"text: {text}\n"
-        ).encode("utf-8")
-        _atomic_write_bytes(output_path, placeholder)
-        log_fn(f"   🧪 DRY RUN — wrote placeholder: {output_path.name}")
+        # Write a real, short, playable silent audio file (matching the output
+        # extension) so QLab + the in-app player can decode DRY_RUN output.
+        from hamlet_ai.core.audio.silent_audio import write_silent_for_extension
+
+        write_silent_for_extension(output_path)
+        log_fn(f"   🧪 DRY RUN — wrote silent {output_path.suffix}: {output_path.name}")
         return output_path
 
     if client is None:
