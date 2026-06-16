@@ -44,6 +44,7 @@ dev = [
     "pytest-mock>=3.12",
     "responses>=0.25",
     "tqdm>=4.66",
+    "ruff>=0.6",
 ]
 all = [
     "hamlet-ai[providers,audio,gui,dev]",
@@ -62,3 +63,13 @@ qt_api = "pyside6"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+
+[tool.ruff]
+# Keep the CI lint gate high-signal: pyflakes (F) catches real defects
+# (unused imports, undefined names, redefinitions) without style churn.
+# E9 catches syntax/IndentationErrors. Add more rule families as the codebase
+# adopts them.
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F", "E9"]

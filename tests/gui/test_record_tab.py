@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 from PySide6.QtCore import QObject, Signal
 
 from hamlet_ai.config import AppConfig, ScriptGenSettings, VoiceCloneSettings
-from hamlet_ai.core.audio.recorder import AudioRecorder
 from hamlet_ai.gui.voice_clone.record_tab import RecordTab
 from hamlet_ai.gui.widgets.countdown_timer import CountdownPhase, CountdownTimer
 from hamlet_ai.gui.widgets.level_meter import LevelMeter
@@ -27,6 +24,8 @@ class FakeRecorder(QObject):
     def __init__(self):
         super().__init__()
         self.is_recording = False
+        self.is_active = False
+        self.is_paused = False
         self.started_with: tuple[Path, float | None] | None = None
         self.stop_calls = 0
 
@@ -34,11 +33,23 @@ class FakeRecorder(QObject):
         if self.is_recording:
             raise RuntimeError("already recording")
         self.is_recording = True
+        self.is_active = True
+        self.is_paused = False
         self.started_with = (Path(output_path), target_seconds)
+
+    def pause(self):
+        self.is_recording = False
+        self.is_paused = True
+
+    def resume(self):
+        self.is_recording = True
+        self.is_paused = False
 
     def stop(self):
         self.stop_calls += 1
         self.is_recording = False
+        self.is_active = False
+        self.is_paused = False
         if self.started_with is not None:
             self.finished.emit(self.started_with[0])
 
@@ -247,3 +258,65 @@ def test_mic_check_handles_denied(qtbot, cfg):
     rms = tab.mic_check(probe=boom)
     assert rms is None
     assert "failed" in tab.status_label.text().lower()
+
+
+# ---------- pause / resume + play (review) -------------------------------
+
+def test_record_enables_pause_disables_play(qtbot, cfg):
+    tab = RecordTab(cfg, recorder=FakeRecorder())
+    qtbot.addWidget(tab)
+    tab._on_record_clicked()
+    assert tab.pause_button.isEnabled()
+    assert not tab.play_button.isEnabled()
+
+
+def test_pause_button_toggles_recorder_and_label(qtbot, cfg):
+    rec = FakeRecorder()
+    tab = RecordTab(cfg, recorder=rec)
+    qtbot.addWidget(tab)
+    tab._on_record_clicked()
+    tab._on_prep_finished()
+    assert rec.is_recording is True
+
+    tab._on_pause_clicked()
+    assert rec.is_paused is True
+    assert "Resume" in tab.pause_button.text()
+
+    tab._on_pause_clicked()
+    assert rec.is_paused is False
+    assert "Pause" in tab.pause_button.text()
+
+
+def test_stop_finalizes_even_when_paused(qtbot, cfg):
+    rec = FakeRecorder()
+    tab = RecordTab(cfg, recorder=rec)
+    qtbot.addWidget(tab)
+    tab._on_record_clicked()
+    tab._on_prep_finished()
+    tab._on_pause_clicked()
+    assert rec.is_recording is False and rec.is_active is True
+    tab._on_stop_clicked()
+    assert rec.stop_calls == 1
+
+
+def test_finished_enables_play_and_disables_pause(qtbot, cfg, tmp_path):
+    rec = FakeRecorder()
+    tab = RecordTab(cfg, recorder=rec)
+    qtbot.addWidget(tab)
+    saved = tmp_path / "vol.wav"
+    rec.finished.emit(saved)
+    assert tab.play_button.isEnabled()
+    assert not tab.pause_button.isEnabled()
+
+
+def test_play_click_plays_last_recording(qtbot, cfg, tmp_path):
+    rec = FakeRecorder()
+    tab = RecordTab(cfg, recorder=rec)
+    qtbot.addWidget(tab)
+    saved = tmp_path / "vol.wav"
+    saved.write_bytes(b"FAKE")
+    played: list = []
+    tab.player.play = lambda p: played.append(p)  # don't touch real audio in tests
+    rec.finished.emit(saved)
+    tab._on_play_clicked()
+    assert played == [saved]

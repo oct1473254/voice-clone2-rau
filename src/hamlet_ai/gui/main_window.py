@@ -6,10 +6,11 @@ shared LogPane to every child, and gives the operator a single Settings entry.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QDockWidget,
     QLabel,
     QMainWindow,
@@ -21,9 +22,14 @@ from PySide6.QtWidgets import (
 )
 
 from hamlet_ai.config import AppConfig, save_config
+from hamlet_ai.gui.consent_dialog import ConsentDialog
+from hamlet_ai.gui.script_gen.simple_tab import ScriptGenPanel
 from hamlet_ai.gui.settings_dialog import SettingsDialog
+from hamlet_ai.gui.voice_clone.record_tab import RecordTab
 from hamlet_ai.gui.widgets.log_pane import LogPane
 from hamlet_ai.gui.widgets.status_pill import StatusPill
+from hamlet_ai.gui.workers import RunShowWorker
+from hamlet_ai.gui.style import GLOBAL_STYLESHEET
 from hamlet_ai.show_mode import FALLBACK_ACTIONS, is_locked
 
 
@@ -37,6 +43,10 @@ class MainWindow(QMainWindow):
         self.resize(1100, 720)
         self.cfg = cfg
         self._el_tested_ok = False
+        # Keep (thread, worker) pairs alive until their thread finishes; Qt would
+        # otherwise GC a moved-to-thread worker mid-run.
+        self._active_workers: list[tuple[QThread, QWidget]] = []
+        self.setStyleSheet(GLOBAL_STYLESHEET)
 
         self.log_pane = LogPane(self)
         self.log_dock = QDockWidget("Log", self)
@@ -46,13 +56,17 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget(self)
         self.setCentralWidget(self.tabs)
-        # Placeholder tabs — replaced in subsequent steps.
-        self._script_gen_placeholder = QLabel("Script Generation — wired in Step 13/14")
-        self._script_gen_placeholder.setAlignment(Qt.AlignCenter)
-        self._voice_clone_placeholder = QLabel("Voice Clone — wired in Step 11/12")
-        self._voice_clone_placeholder.setAlignment(Qt.AlignCenter)
-        self.tabs.addTab(self._script_gen_placeholder, "Script Generation")
-        self.tabs.addTab(self._voice_clone_placeholder, "Voice Clone")
+
+        self.script_gen_tab = ScriptGenPanel(
+            cfg_provider=lambda: self.cfg,
+            start_worker=self.start_worker,
+        )
+        self.tabs.addTab(self.script_gen_tab, "Script Generation")
+
+        self.record_tab = RecordTab(self.cfg)
+        self.record_tab.recording_saved.connect(lambda _p: self.set_status("ready"))
+        self.record_tab.clone_requested.connect(self._on_clone_requested)
+        self.tabs.addTab(self.record_tab, "Voice Clone")
 
         self._build_toolbar()
         self._build_status_bar()
@@ -235,3 +249,76 @@ class MainWindow(QMainWindow):
         worker.log.connect(self.log_pane.append_message)
         if hasattr(worker, "failed"):
             worker.failed.connect(lambda msg: self.log_pane.append_message(f"❌ {msg}"))
+
+    def start_worker(self, worker) -> QThread:
+        """Move ``worker`` onto a fresh QThread, run it, and wire shared logging.
+
+        The (thread, worker) pair is retained until the thread finishes so Qt
+        doesn't garbage-collect a running worker. ``finished``/``failed`` signals
+        (if present) quit the thread.
+        """
+        self.wire_worker_logging(worker)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        for sig_name in ("finished", "failed"):
+            sig = getattr(worker, sig_name, None)
+            if sig is not None:
+                sig.connect(thread.quit)
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_worker(t, w))
+        self._active_workers.append((thread, worker))
+        thread.start()
+        return thread
+
+    def _cleanup_worker(self, thread: QThread, worker) -> None:
+        self._active_workers = [
+            pair for pair in self._active_workers if pair[0] is not thread
+        ]
+        worker.deleteLater()
+        thread.deleteLater()
+
+    # ---------- Voice clone: consent → clone → generate ----------
+    def _on_clone_requested(self, sample_path) -> None:
+        """Operator tapped 'Clone This Recording'. Gate on consent, then run."""
+        dlg = ConsentDialog(parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self.log_pane.append_message("Clone cancelled (consent not confirmed).")
+            return
+        consent = dlg.consent_record()
+        self._isolate_sample(sample_path)
+
+        self.set_status("cloning")
+        worker = RunShowWorker(self.cfg, consent=consent)
+        worker.finished.connect(self._on_clone_finished)
+        worker.over_budget.connect(
+            lambda _t: self.log_pane.append_message(
+                "⚠️  Clone exceeded the time budget — consider a fallback."
+            )
+        )
+        worker.failed.connect(lambda _m: self.set_status("failed"))
+        self.start_worker(worker)
+
+    def _isolate_sample(self, sample_path) -> None:
+        """Ensure the just-recorded take is the only sample the clone will read.
+
+        ``SAMPLE/`` is a transient input dir; the pipeline copies the chosen
+        sample into the run folder, so removing other stray takes here is safe
+        and guarantees the operator clones the recording they just reviewed.
+        """
+        from pathlib import Path
+
+        sample_path = Path(sample_path)
+        sample_dir = self.cfg.voice_clone.sample_dir
+        if not sample_dir.is_dir():
+            return
+        for f in sample_dir.iterdir():
+            if f.is_file() and not f.name.startswith(".") and f != sample_path:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+    def _on_clone_finished(self, run) -> None:
+        self.set_status("qlab_ready")
+        self.log_pane.append_message("✅ Clone complete — LINES/ ready for QLab.")
+        self.record_tab.reset_for_next_take()

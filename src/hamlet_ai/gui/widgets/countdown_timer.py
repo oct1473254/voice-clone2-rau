@@ -10,9 +10,8 @@ Driven by a QTimer at 10Hz so the seconds-display feels responsive.
 from __future__ import annotations
 
 import enum
-from typing import Optional
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QTimer, Signal, Slot
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
@@ -58,6 +57,20 @@ class CountdownTimer(QWidget):
         self.phase = CountdownPhase.IDLE
         self.remaining = 0.0
         self.label.setText("—")
+
+    @Slot()
+    def pause(self) -> None:
+        """Freeze the countdown without losing phase/remaining (used when the
+        recorder is paused). Resume with :meth:`resume`."""
+        self._timer.stop()
+        if self.phase is CountdownPhase.RECORD:
+            self.label.setText(f"{self.remaining:0.1f} s — paused")
+
+    @Slot()
+    def resume(self) -> None:
+        if self.phase in (CountdownPhase.PREP, CountdownPhase.RECORD):
+            self._update_label()
+            self._timer.start()
 
     @Slot(float)
     def update_remaining(self, remaining: float) -> None:

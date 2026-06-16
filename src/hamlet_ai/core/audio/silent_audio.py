@@ -11,9 +11,7 @@ A WAV variant is also provided as a fallback for callers that prefer wav.
 from __future__ import annotations
 
 import base64
-import io
 import os
-import struct
 import tempfile
 import wave
 from pathlib import Path

@@ -1,9 +1,7 @@
 """Step 6: scene → ParsedScript transformation and on-disk write."""
 from __future__ import annotations
 
-from pathlib import Path
 
-import pytest
 
 from hamlet_ai.core.script_gen.line_splitter import (
     ParsedScript,

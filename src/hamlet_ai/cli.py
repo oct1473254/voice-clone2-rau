@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 from typing import Sequence
 
 from hamlet_ai.config import AppConfig, default_config, ensure_dirs
@@ -153,7 +152,10 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
     from hamlet_ai.core.script_gen.line_splitter import split_script, write_split_files
     from hamlet_ai.core.script_gen.llm import LLMProvider, generate
     from hamlet_ai.core.script_gen.prompt import construct_prompt
-    from hamlet_ai.core.script_gen.translation import translate
+    from hamlet_ai.core.script_gen.translation import (
+        TranslationCountMismatch,
+        translate_scene,
+    )
     from hamlet_ai.core.script_gen.tts import synthesize_line
 
     if args.dry_run:
@@ -197,26 +199,33 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
     en_path.write_text(english, encoding="utf-8")
     print(f"📝 English scene saved: {en_path}")
 
-    german: str | None = None
-    if not args.no_translate:
-        print("🌍 Translating to German...")
-        try:
-            german = translate(english, cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"⚠️  Translation failed: {e}", file=sys.stderr)
-            german = None
-        if german:
-            de_path = workspace / "german_scene.txt"
-            de_path.write_text(german, encoding="utf-8")
-            print(f"📝 German scene saved: {de_path}")
-
+    # Split English first, then translate line-by-line. This keeps each German
+    # line aligned to its English character label and line_id (Step 6) instead
+    # of translating the whole scene and re-splitting, which can drift.
     parsed_en = split_script(english)
     write_split_files(parsed_en, workspace, language="English")
     print(f"🪓 Split {len(parsed_en.lines)} English lines.")
-    if german:
-        parsed_de = split_script(german)
-        write_split_files(parsed_de, workspace, language="German")
-        print(f"🪓 Split {len(parsed_de.lines)} German lines.")
+
+    parsed_de = None
+    if not args.no_translate:
+        print("🌍 Translating to German (per line)...")
+        try:
+            parsed_de = translate_scene(parsed_en, cfg, target_language="German")
+        except TranslationCountMismatch as e:
+            print(f"⚠️  Translation skipped (line count mismatch): {e}", file=sys.stderr)
+            parsed_de = None
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️  Translation failed: {e}", file=sys.stderr)
+            parsed_de = None
+        if parsed_de is not None:
+            de_text = "\n".join(
+                f"{line.character}: {line.dialogue}" for line in parsed_de.lines
+            )
+            de_path = workspace / "german_scene.txt"
+            de_path.write_text(de_text, encoding="utf-8")
+            print(f"📝 German scene saved: {de_path}")
+            write_split_files(parsed_de, workspace, language="German")
+            print(f"🪓 Split {len(parsed_de.lines)} German lines.")
 
     if not args.no_tts:
         voice_map = CharacterVoiceMap(cfg.script_gen.character_voices_path)
@@ -245,6 +254,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+
+    # Load ELEVENLABS_API_KEY / provider keys from a project-root .env so all
+    # subcommands (gui, doctor, voice-clone, script-gen) pick them up, matching
+    # the legacy shims and the .command launcher. Existing env vars win.
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
     cfg = default_config()
 

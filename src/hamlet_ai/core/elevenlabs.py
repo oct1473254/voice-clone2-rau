@@ -203,13 +203,41 @@ class ElevenLabsClient:
     def get_voice_status(self, voice_id: str) -> int:
         """Poll a voice's readiness. Returns the raw status code (404 == not ready).
 
-        Intentionally does not retry — 404 is an expected polling signal.
+        Runs inside ``wait_for_voice``'s live poll loop, so a transient network
+        blip must not abort the show. We retry connection errors, timeouts, and
+        transient server statuses (429/5xx) with backoff. 200 (ready) and 404
+        (not ready yet) are the meaningful polling signals and are returned
+        immediately without retry.
         """
-        response = self.session.get(
-            VOICE_DETAIL_URL.format(voice_id=voice_id),
-            headers=self._headers(),
-            timeout=self.timeout,
-        )
+        url = VOICE_DETAIL_URL.format(voice_id=voice_id)
+        response: requests.Response | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.get(
+                    url, headers=self._headers(), timeout=self.timeout
+                )
+            except requests.Timeout:
+                self._log(f"GET status timed out (attempt {attempt + 1})")
+                if attempt < self.max_retries:
+                    self.sleep_fn(self._backoff(attempt))
+                    continue
+                raise Timeout(None, "voice status request timed out")
+            except requests.RequestException as e:
+                self._log(f"GET status connection error (attempt {attempt + 1})")
+                if attempt < self.max_retries:
+                    self.sleep_fn(self._backoff(attempt))
+                    continue
+                raise ElevenLabsError(None, str(e))
+
+            if response.status_code in RETRY_STATUSES and attempt < self.max_retries:
+                self._log(
+                    f"GET status {response.status_code}; retrying (attempt {attempt + 1})"
+                )
+                self.sleep_fn(self._backoff(attempt))
+                continue
+            return response.status_code
+
+        assert response is not None
         return response.status_code
 
     def synthesize(

@@ -1,7 +1,6 @@
 """Step 10: SettingsDialog reads cfg, edits round-trip, never persists API keys."""
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

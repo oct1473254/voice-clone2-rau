@@ -8,17 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QThread
 
 from hamlet_ai.config import AppConfig, ScriptGenSettings, VoiceCloneSettings
-from hamlet_ai.core.elevenlabs import ElevenLabsClient
 from hamlet_ai.core.script_gen.line_splitter import ScriptLine
 from hamlet_ai.core.script_gen.llm import LLMClients
 from hamlet_ai.core.script_gen.prompt import ScriptGenParams
-from hamlet_ai.core.voice_clone.script_model import ScriptEntry
 from hamlet_ai.gui import workers
 
 

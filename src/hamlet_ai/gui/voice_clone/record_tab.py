@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -27,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from hamlet_ai.config import AppConfig
+from hamlet_ai.core.audio.playback import AudioPlayer
 from hamlet_ai.core.audio.recorder import AudioRecorder
 from hamlet_ai.gui.widgets.countdown_timer import CountdownTimer
 from hamlet_ai.gui.widgets.level_meter import LevelMeter
@@ -40,8 +40,16 @@ class RecordTab(QWidget):
         super().__init__(parent)
         self.cfg = cfg
         self.recorder = recorder or AudioRecorder(samplerate=cfg.voice_clone.recording_samplerate)
+        self.player = AudioPlayer(self)
+        self.player.state_changed.connect(self._on_player_state)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        heading = QLabel("Capture a volunteer's voice")
+        heading.setObjectName("recordHeading")
+        layout.addWidget(heading)
 
         form = QFormLayout()
         self.device_combo = QComboBox()
@@ -65,22 +73,45 @@ class RecordTab(QWidget):
         meter_row.addWidget(self.countdown, stretch=1)
         layout.addLayout(meter_row)
 
+        # Primary control: one big Record button that doubles as Stop while live.
+        self.record_button = QPushButton("● Record")
+        self.record_button.setObjectName("bigRecordButton")
+        self.record_button.setMinimumHeight(72)
+        self.record_button.clicked.connect(self._on_record_clicked)
+        layout.addWidget(self.record_button)
+
+        # Transport row: Pause/Resume + Play (review the captured take).
+        transport_row = QHBoxLayout()
+        self.pause_button = QPushButton("⏸ Pause")
+        self.pause_button.setObjectName("transportButton")
+        self.pause_button.setMinimumHeight(44)
+        self.pause_button.setEnabled(False)
+        self.pause_button.clicked.connect(self._on_pause_clicked)
+        transport_row.addWidget(self.pause_button)
+        self.play_button = QPushButton("▶ Play")
+        self.play_button.setObjectName("transportButton")
+        self.play_button.setMinimumHeight(44)
+        self.play_button.setEnabled(False)
+        self.play_button.clicked.connect(self._on_play_clicked)
+        transport_row.addWidget(self.play_button)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setMinimumHeight(44)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._on_stop_clicked)
+        transport_row.addWidget(self.stop_button)
+        layout.addLayout(transport_row)
+
+        # Secondary row: mic check + post-take decisions.
         button_row = QHBoxLayout()
         self.mic_check_button = QPushButton("Mic check")
         self.mic_check_button.clicked.connect(self._on_mic_check_clicked)
         button_row.addWidget(self.mic_check_button)
-        self.record_button = QPushButton("Record")
-        self.record_button.clicked.connect(self._on_record_clicked)
-        button_row.addWidget(self.record_button)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._on_stop_clicked)
-        button_row.addWidget(self.stop_button)
         self.retry_button = QPushButton("Discard / Retry")
         self.retry_button.setEnabled(False)
         self.retry_button.clicked.connect(self._on_retry_clicked)
         button_row.addWidget(self.retry_button)
         self.clone_button = QPushButton("Clone This Recording")
+        self.clone_button.setObjectName("cloneButton")
         self.clone_button.setEnabled(False)
         self.clone_button.clicked.connect(self._on_clone_clicked)
         button_row.addWidget(self.clone_button)
@@ -89,6 +120,8 @@ class RecordTab(QWidget):
         self.status_label = QLabel("Idle.")
         layout.addWidget(self.status_label)
         layout.addStretch(1)
+
+        self._playing = False
 
         self._last_recording: Path | None = None
 
@@ -102,8 +135,13 @@ class RecordTab(QWidget):
         self._wire_recorder()
 
     def reset_for_next_take(self) -> None:
+        self.player.stop()
         self.record_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ Pause")
+        self.play_button.setEnabled(False)
+        self.play_button.setText("▶ Play")
         self.retry_button.setEnabled(False)
         self.clone_button.setEnabled(False)
         self.level_meter.set_level(0.0)
@@ -163,12 +201,47 @@ class RecordTab(QWidget):
     def _on_record_clicked(self) -> None:
         if self.recorder.is_recording:
             return
+        self.player.stop()
         self.record_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("⏸ Pause")
+        self.play_button.setEnabled(False)
         self.retry_button.setEnabled(False)
         self.clone_button.setEnabled(False)
         self.status_label.setText("Get ready…")
         self.countdown.start(self.cfg.voice_clone.recording_target_seconds)
+
+    @Slot()
+    def _on_pause_clicked(self) -> None:
+        """Toggle pause/resume on the live recording (and its countdown)."""
+        if not getattr(self.recorder, "is_active", False):
+            return
+        if getattr(self.recorder, "is_paused", False):
+            self.recorder.resume()
+            self.countdown.resume()
+            self.pause_button.setText("⏸ Pause")
+            self.status_label.setText("Recording…")
+        else:
+            self.recorder.pause()
+            self.countdown.pause()
+            self.pause_button.setText("⏵ Resume")
+            self.status_label.setText("Paused.")
+
+    @Slot()
+    def _on_play_clicked(self) -> None:
+        """Review the captured take. Toggles play/pause on the AudioPlayer."""
+        if self._last_recording is None or not self._last_recording.exists():
+            return
+        if self._playing:
+            self.player.pause()
+        else:
+            self.player.play(self._last_recording)
+
+    @Slot(str)
+    def _on_player_state(self, state: str) -> None:
+        self._playing = state == "playing"
+        self.play_button.setText("⏸ Pause playback" if self._playing else "▶ Play")
 
     @Slot()
     def _on_prep_finished(self) -> None:
@@ -191,9 +264,12 @@ class RecordTab(QWidget):
     @Slot()
     def _on_stop_clicked(self) -> None:
         self.countdown.cancel()
-        if self.recorder.is_recording:
+        # Stop finalizes the take whether it is live or paused.
+        if getattr(self.recorder, "is_active", self.recorder.is_recording):
             self.recorder.stop()
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ Pause")
 
     @Slot()
     def _on_retry_clicked(self) -> None:
@@ -214,6 +290,9 @@ class RecordTab(QWidget):
     def _on_recorder_finished(self, path: Path) -> None:
         self._last_recording = path
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ Pause")
+        self.play_button.setEnabled(True)
         self.retry_button.setEnabled(True)
         self.clone_button.setEnabled(True)
         self.record_button.setEnabled(True)
@@ -226,6 +305,8 @@ class RecordTab(QWidget):
         self.countdown.cancel()
         self.record_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("⏸ Pause")
 
     def _default_filename(self) -> str:
         return f"volunteer_{time.strftime('%Y%m%d_%H%M%S')}.wav"

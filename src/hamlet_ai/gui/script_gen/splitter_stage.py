@@ -1,7 +1,7 @@
 """Splitter stage: run the tolerant splitter and show valid + rejected lines."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,

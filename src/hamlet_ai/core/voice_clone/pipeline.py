@@ -199,7 +199,6 @@ def synthesize(
     target_dir = output_dir if output_dir is not None else cfg.voice_clone.lines_dir
     target_dir.mkdir(parents=True, exist_ok=True)
     final_path = target_dir / filename
-    tmp_path = target_dir / f".{filename}.tmp"
 
     if cfg.dry_run:
         # Write a real playable silent audio file so QLab + in-app playback work.
@@ -220,8 +219,10 @@ def synthesize(
         model_id=cfg.voice_clone.model_id,
         voice_settings=cfg.voice_clone.voice_settings,
     )
-    tmp_path.write_bytes(audio)
-    os.replace(tmp_path, final_path)
+    # Atomic write with tmp cleanup-on-failure so QLab never sees a partial file.
+    from hamlet_ai.core.elevenlabs import write_audio_atomic
+
+    write_audio_atomic(final_path, audio)
     log_fn(f"   ✅ Saved: {filename}")
     return final_path
 
@@ -335,6 +336,7 @@ def run_show(
     log_fn: LogFn = print,
     client: ElevenLabsClient | None = None,
     now: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> RunFolder:
     """Run one voice-clone session safely and sequentially.
 
@@ -354,6 +356,7 @@ def run_show(
     log_fn("\n🎭 HAMLET.AI — VOICE CLONE SCRIPT")
     log_fn("=" * 40)
 
+    t_start = clock()
     run = RunFolder.create_for_now(cfg, now=now)
     run.append_log("run started")
     log_fn(f"📂 Run folder: {run.root}")
@@ -371,6 +374,7 @@ def run_show(
     # Sequential pipeline — clone reads from the run's own sample copy.
     voice_id = clone_voice(cfg, log_fn=log_fn, client=client, sample_dir=run.sample_dir)
     voice_id = wait_for_voice(cfg, voice_id, log_fn=log_fn, client=client)
+    t_clone_ready = clock()
 
     run.write_metadata(
         {
@@ -407,6 +411,31 @@ def run_show(
 
     # Record the clone in the persistent library.
     _record_in_library(cfg, voice_id, consent, run)
+
+    # Performance budget (Step 16): time each phase and flag overruns so the GUI
+    # can offer fallbacks (stock voice / restore last good).
+    t_done = clock()
+    target = cfg.voice_clone.target_total_seconds
+    timings = {
+        "clone_ready_seconds": round(t_clone_ready - t_start, 2),
+        "generation_seconds": round(t_done - t_clone_ready, 2),
+        "total_seconds": round(t_done - t_start, 2),
+        "target_total_seconds": target,
+        "within_budget": (t_done - t_start) <= target,
+    }
+    run.timings = timings
+    run.update_metadata({"timings": timings})
+    run.append_log(
+        "timings: clone_ready={clone_ready_seconds}s "
+        "generation={generation_seconds}s total={total_seconds}s "
+        "target={target_total_seconds}s within_budget={within_budget}".format(**timings)
+    )
+    status = "within" if timings["within_budget"] else "OVER"
+    log_fn(
+        f"⏱️  Total {timings['total_seconds']}s "
+        f"(clone {timings['clone_ready_seconds']}s + generate "
+        f"{timings['generation_seconds']}s) — {status} the {target}s budget."
+    )
 
     run.append_log("run complete")
     log_fn("\n🎭 Done. Files are in LINES/ and ready for QLab.")

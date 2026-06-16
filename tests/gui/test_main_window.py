@@ -1,7 +1,6 @@
 """Step 10: MainWindow opens, hosts both tabs + a log pane, owns AppConfig."""
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

@@ -1,7 +1,6 @@
 """Step 6: CharacterVoiceMap persistence and resolution with overrides."""
 from __future__ import annotations
 
-import json
 
 import pytest
 

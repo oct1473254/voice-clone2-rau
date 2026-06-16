@@ -19,10 +19,14 @@ from typing import Sequence
 from PySide6.QtCore import QObject, Signal, Slot
 
 from hamlet_ai.config import AppConfig
-from hamlet_ai.core.script_gen.line_splitter import ParsedScript, ScriptLine, split_script
+from hamlet_ai.core.script_gen.line_splitter import ScriptLine, split_script, write_split_files
 from hamlet_ai.core.script_gen.llm import LLMClients, LLMProvider, generate as llm_generate
 from hamlet_ai.core.script_gen.prompt import ScriptGenParams, construct_prompt
-from hamlet_ai.core.script_gen.translation import translate as llm_translate
+from hamlet_ai.core.script_gen.translation import (
+    TranslationCountMismatch,
+    translate as llm_translate,
+    translate_scene,
+)
 from hamlet_ai.core.script_gen.tts import synthesize_line
 from hamlet_ai.core.voice_clone import pipeline as vc_pipeline
 
@@ -105,7 +109,8 @@ class AdHocTTSWorker(_WorkerBase):
 
 
 class RunShowWorker(_WorkerBase):
-    finished = Signal()
+    finished = Signal(object)  # RunFolder (carries .timings for the result panel)
+    over_budget = Signal(object)  # timings dict, emitted only when the budget is blown
 
     def __init__(self, cfg: AppConfig, consent=None, parent: QObject | None = None):
         super().__init__(cfg, parent)
@@ -114,8 +119,15 @@ class RunShowWorker(_WorkerBase):
     @Slot()
     def run(self) -> None:
         try:
-            vc_pipeline.run_show(self.cfg, consent=self.consent, log_fn=self.log.emit)
-            self.finished.emit()
+            run = vc_pipeline.run_show(self.cfg, consent=self.consent, log_fn=self.log.emit)
+            timings = getattr(run, "timings", {}) or {}
+            if timings and not timings.get("within_budget", True):
+                self.log.emit(
+                    "⚠️  Clone exceeded the time budget — consider a fallback "
+                    "(stock Ghost voice or Restore last good LINES/)."
+                )
+                self.over_budget.emit(timings)
+            self.finished.emit(run)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 
@@ -201,6 +213,108 @@ class SplitterWorker(_WorkerBase):
             parsed = split_script(self.text)
             self.log.emit(f"   ✅ {len(parsed.lines)} lines, {len(parsed.characters)} characters, {len(parsed.rejected)} rejected.")
             self.finished.emit(parsed)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class ScriptGenPipelineWorker(_WorkerBase):
+    """Run the whole one-page Script Gen flow in a single background pass.
+
+    Mirrors ``cli._run_script_gen``: generate → split → (translate) → (TTS) →
+    copy to the Desktop layout. Emits ``log`` lines throughout, ``progress`` for
+    the per-line TTS step, and ``finished(desktop_root)`` on success. Per-line
+    TTS failures are logged but never abort the run.
+    """
+
+    progress = Signal(int, int)  # done, total (TTS phase)
+    finished = Signal(object)  # Path — the Desktop output root
+
+    def __init__(
+        self,
+        cfg: AppConfig,
+        params: ScriptGenParams,
+        *,
+        translate: bool = True,
+        do_tts: bool = True,
+        clients: LLMClients | None = None,
+        parent: QObject | None = None,
+    ):
+        super().__init__(cfg, parent)
+        self.params = params
+        self.translate = translate
+        self.do_tts = do_tts
+        self.clients = clients
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from hamlet_ai.config import ensure_dirs
+            from hamlet_ai.core.script_gen.character_voices import CharacterVoiceMap
+            from hamlet_ai.core.script_gen.export import copy_to_desktop
+
+            ensure_dirs(self.cfg)
+            workspace = self.cfg.script_gen.workspace_dir
+            provider = LLMProvider(self.cfg.script_gen.default_provider)
+            model = self.cfg.script_gen.models[provider.value]
+
+            self.log.emit(f"🎭 Generating scene via {provider.value} ({model})...")
+            prompt = construct_prompt(self.params)
+            english = llm_generate(
+                prompt,
+                provider,
+                model,
+                anthropic_api_key=self.cfg.anthropic_api_key,
+                openai_api_key=self.cfg.openai_api_key,
+                clients=self.clients,
+            )
+            en_path = workspace / "english_scene.txt"
+            en_path.parent.mkdir(parents=True, exist_ok=True)
+            en_path.write_text(english, encoding="utf-8")
+            self.log.emit(f"📝 English scene saved: {en_path}")
+
+            parsed_en = split_script(english)
+            write_split_files(parsed_en, workspace, language="English")
+            self.log.emit(f"🪓 Split {len(parsed_en.lines)} English lines.")
+
+            if self.translate:
+                self.log.emit("🌍 Translating to German (per line)...")
+                try:
+                    parsed_de = translate_scene(parsed_en, self.cfg, target_language="German", clients=self.clients)
+                except TranslationCountMismatch as e:
+                    self.log.emit(f"⚠️  Translation skipped (line count mismatch): {e}")
+                    parsed_de = None
+                except Exception as e:  # noqa: BLE001
+                    self.log.emit(f"⚠️  Translation failed: {e}")
+                    parsed_de = None
+                if parsed_de is not None:
+                    de_text = "\n".join(
+                        f"{line.character}: {line.dialogue}" for line in parsed_de.lines
+                    )
+                    (workspace / "german_scene.txt").write_text(de_text, encoding="utf-8")
+                    write_split_files(parsed_de, workspace, language="German")
+                    self.log.emit(f"🪓 Split {len(parsed_de.lines)} German lines.")
+
+            if self.do_tts:
+                voice_map = CharacterVoiceMap(self.cfg.script_gen.character_voices_path)
+                en_output = workspace / "valid_lines" / "English" / "output"
+                en_output.mkdir(parents=True, exist_ok=True)
+                total = len(parsed_en.lines)
+                self.log.emit(f"🔊 Synthesizing {total} English lines...")
+                for i, line in enumerate(parsed_en.lines, start=1):
+                    voice_id = voice_map.resolve(line.character)
+                    out = en_output / f"{line.line_number:03d}-{line.character}.mp3"
+                    self.log.emit(f"[{i}/{total}] {out.name}")
+                    try:
+                        synthesize_line(self.cfg, line.dialogue, voice_id, out, log_fn=self.log.emit)
+                    except Exception as e:  # noqa: BLE001 — keep going on per-line failure
+                        self.log.emit(f"   ❌ Line {i}: {e}")
+                    self.progress.emit(i, total)
+                self.log.emit("🔊 TTS complete.")
+
+            self.log.emit(f"📦 Copying to Desktop layout: {self.cfg.script_gen.base_dir}")
+            copy_to_desktop(workspace, self.cfg.script_gen.base_dir, log_fn=self.log.emit)
+            self.log.emit("🎭 Done.")
+            self.finished.emit(self.cfg.script_gen.base_dir)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 

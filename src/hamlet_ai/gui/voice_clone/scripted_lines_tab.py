@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal, Slot
 from PySide6.QtWidgets import (

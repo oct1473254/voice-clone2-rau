@@ -1,11 +1,9 @@
 """Step 6 integration: prompt → LLM → translate → split → TTS → export end-to-end."""
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from hamlet_ai.core.elevenlabs import ElevenLabsClient
 from hamlet_ai.core.script_gen.character_voices import CharacterVoiceMap

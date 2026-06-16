@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -52,6 +52,12 @@ class AudioRecorder(QObject):
         self._start_time: float = 0.0
         self._output_path: Path | None = None
         self._auto_stop_requested = False
+        # A "take" is active from start() until stop(), spanning any pauses.
+        # ``_paused_accumulated`` holds seconds captured before the current
+        # (post-resume) segment so the elapsed clock excludes paused gaps.
+        self._active = False
+        self._paused = False
+        self._paused_accumulated = 0.0
 
     @staticmethod
     def list_input_devices() -> list[tuple[int, str]]:
@@ -67,7 +73,18 @@ class AudioRecorder(QObject):
 
     @property
     def is_recording(self) -> bool:
+        """True while a stream is actively capturing (False while paused)."""
         return self._stream is not None
+
+    @property
+    def is_paused(self) -> bool:
+        """True when a take is in progress but the stream is suspended."""
+        return self._active and self._paused
+
+    @property
+    def is_active(self) -> bool:
+        """True between ``start()`` and ``stop()``, spanning any pauses."""
+        return self._active
 
     def start(self, output_path: Path, target_seconds: float | None = None) -> None:
         if self._stream is not None:
@@ -78,8 +95,13 @@ class AudioRecorder(QObject):
         self._output_path = Path(output_path)
         self._target_seconds = target_seconds
         self._auto_stop_requested = False
+        self._active = True
+        self._paused = False
+        self._paused_accumulated = 0.0
         self._start_time = time.monotonic()
+        self._open_stream()
 
+    def _open_stream(self) -> None:
         try:
             self._stream = sd.InputStream(
                 samplerate=self.samplerate,
@@ -93,15 +115,40 @@ class AudioRecorder(QObject):
             self.error.emit(f"Failed to open input stream: {e}")
             raise
 
-    def stop(self) -> Path | None:
-        if self._stream is None:
-            return None
+    def pause(self) -> None:
+        """Suspend capture without finalizing the take. Buffered audio is kept."""
+        if not self._active or self._paused or self._stream is None:
+            return
+        # Bank the seconds captured in this segment, then tear the stream down.
+        self._paused_accumulated += time.monotonic() - self._start_time
         try:
             self._stream.stop()
             self._stream.close()
         except Exception:  # noqa: BLE001 — best effort
             pass
         self._stream = None
+        self._paused = True
+
+    def resume(self) -> None:
+        """Reopen the stream and continue appending to the same take."""
+        if not self._active or not self._paused:
+            return
+        self._start_time = time.monotonic()
+        self._open_stream()
+        self._paused = False
+
+    def stop(self) -> Path | None:
+        if not self._active:
+            return None
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:  # noqa: BLE001 — best effort
+                pass
+        self._stream = None
+        self._active = False
+        self._paused = False
         return self._flush_to_disk()
 
     def _flush_to_disk(self) -> Path | None:
@@ -123,7 +170,7 @@ class AudioRecorder(QObject):
         chunk = np.array(indata, copy=True)
         self._buffers.append(chunk)
         rms = float(np.sqrt(np.mean(np.square(chunk)))) if chunk.size else 0.0
-        elapsed = time.monotonic() - self._start_time
+        elapsed = self._paused_accumulated + (time.monotonic() - self._start_time)
         self.level_changed.emit(min(rms, 1.0))
         self.duration_changed.emit(elapsed)
         if (

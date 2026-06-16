@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +55,10 @@ class VoiceCloneSettings:
     clone_poll_interval: float = 5.0
     clone_timeout: float = 120.0
     api_timeout_seconds: float = 30.0
+    # Performance budget (Step 16): the README promises a clone-to-QLab turnaround
+    # under two minutes. run_show times itself against this and flags overruns so
+    # the GUI can offer fallback (stock voice / restore last good).
+    target_total_seconds: float = 120.0
     model_id: str = "eleven_v3"
     voice_settings: dict[str, float] = field(
         default_factory=lambda: {

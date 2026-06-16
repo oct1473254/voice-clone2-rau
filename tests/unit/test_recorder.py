@@ -149,3 +149,43 @@ def test_default_samplerate_is_48k():
     rec = AudioRecorder()
     assert rec.samplerate == 48000
     assert rec.channels == 1
+
+
+# ---------- pause / resume ----------------------------------------------
+
+def test_pause_then_resume_keeps_take_active(qtbot, mock_sd, tmp_path):
+    rec = AudioRecorder()
+    rec.start(tmp_path / "v.wav")
+    assert rec.is_recording and rec.is_active and not rec.is_paused
+    rec.pause()
+    assert rec.is_paused and rec.is_active and not rec.is_recording
+    rec.resume()
+    assert rec.is_recording and rec.is_active and not rec.is_paused
+    rec.stop()
+    assert not rec.is_active
+
+
+def test_pause_resume_concatenates_buffers_and_flushes_once(qtbot, mock_sd, mock_sf, tmp_path):
+    rec = AudioRecorder()
+    out = tmp_path / "v.wav"
+    rec.start(out)
+    rec._on_audio(np.array([[0.1]], dtype=np.float32), 1, None, None)
+    rec.pause()
+    rec.resume()
+    rec._on_audio(np.array([[0.2]], dtype=np.float32), 1, None, None)
+
+    finished: list[Path] = []
+    rec.finished.connect(finished.append)
+    rec.stop()
+
+    assert len(mock_sf) == 1, "stop must flush exactly once across pauses"
+    _, data, _ = mock_sf[0]
+    assert data.shape[0] == 2  # both segments captured
+    assert finished == [out]
+
+
+def test_pause_when_idle_is_noop(qtbot, mock_sd):
+    rec = AudioRecorder()
+    rec.pause()  # nothing recording — must not raise
+    rec.resume()
+    assert not rec.is_active and not rec.is_paused

@@ -15,7 +15,7 @@ import os
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from hamlet_ai.config import AppConfig
@@ -24,6 +24,9 @@ from hamlet_ai.config import AppConfig
 @dataclass
 class RunFolder:
     root: Path
+    # Populated by pipeline.run_show with the performance-budget timings
+    # (clone_ready_seconds / generation_seconds / total_seconds / within_budget).
+    timings: dict = field(default_factory=dict)
 
     # ---- layout -----------------------------------------------------------
     @property
@@ -79,6 +82,12 @@ class RunFolder:
             except FileNotFoundError:
                 pass
             raise
+
+    def update_metadata(self, extra: dict) -> None:
+        """Merge ``extra`` into the existing metadata and rewrite it atomically."""
+        data = self.read_metadata()
+        data.update(extra)
+        self.write_metadata(data)
 
     def read_metadata(self) -> dict:
         if not self.metadata_path.is_file():

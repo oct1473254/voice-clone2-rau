@@ -1,9 +1,7 @@
 """Step 8: AudioPlayer wraps QMediaPlayer with normalized signals."""
 from __future__ import annotations
 
-from pathlib import Path
 
-import pytest
 
 from PySide6.QtMultimedia import QMediaPlayer
 
