@@ -37,12 +37,12 @@ class TtsStage(QWidget):
 
     @Slot()
     def run_tts(self) -> None:
-        parsed = self.state.parsed_en
+        parsed = self.state.parsed_de
         if parsed is None or not parsed.lines:
             self.status_label.setText("Run the Splitter step first.")
             return
         voice_map = CharacterVoiceMap(self.cfg.script_gen.character_voices_path)
-        out_dir = self.cfg.script_gen.workspace_dir / "valid_lines" / "English" / "output"
+        out_dir = self.cfg.script_gen.workspace_dir / "valid_lines" / "German" / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         total = len(parsed.lines)

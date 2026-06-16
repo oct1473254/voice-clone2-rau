@@ -129,7 +129,7 @@ def test_llm_generation_worker_uses_clients_and_emits_text(qtbot, worker_cfg):
         def messages_create(self, **_):
             return SimpleNamespace(content=[SimpleNamespace(text="HAMLET: Hi.")])
 
-    params = ScriptGenParams("Hamlet", "Act II, Scene 1", 2, "Polonius", "a mic", "comic")
+    params = ScriptGenParams("Ophelia", "Horatio")
     w = workers.LLMGenerationWorker(worker_cfg, params, clients=LLMClients(anthropic_factory=lambda _: StubAnthropic()))
     with qtbot.waitSignal(w.finished, timeout=2000) as blocker:
         w.run()
@@ -141,7 +141,7 @@ def test_llm_generation_worker_emits_failed_on_sdk_error(qtbot, worker_cfg):
         def messages_create(self, **_):
             raise RuntimeError("network down")
 
-    params = ScriptGenParams("Hamlet", "Act II, Scene 1", 2, "Polonius", "a mic", "comic")
+    params = ScriptGenParams("Ophelia", "Horatio")
     w = workers.LLMGenerationWorker(worker_cfg, params, clients=LLMClients(anthropic_factory=lambda _: Broken()))
     with qtbot.waitSignal(w.failed, timeout=2000) as blocker:
         w.run()

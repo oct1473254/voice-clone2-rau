@@ -13,7 +13,8 @@ Show-night safety is the priority: a sequential clone pipeline (no cleanup-durin
 
 ## System Requirements
 
-- **macOS** (developed on Mac Mini M4) or Linux (for headless/CI use)
+- **macOS** (developed on Mac Mini M4) or **Linux** — both fully support the GUI, recording, and playback
+- On **Linux**, two native libraries are needed for audio (macOS bundles them): PortAudio (`libportaudio2`) for recording and a GStreamer MP3 decoder (`gstreamer1.0-libav`, `gstreamer1.0-plugins-good`) for playback. The launcher installs these automatically on first run; `hamlet-ai doctor` reports any that are missing with the exact command for your distro.
 - **Python 3.10+**
 - **ElevenLabs account** with Instant Voice Cloning access (Starter plan or above)
 - **QLab** for playback (configured separately)
@@ -55,9 +56,16 @@ API keys are read from the environment only — they are **never** written to `s
 
 The legacy entry points still work: `python voiceclone2.py` and `python Hamlet-gen5.py` are thin shims that route through the CLI.
 
-### macOS double-click launcher
+### Double-click launchers (macOS + Linux)
 
-`scripts/hamlet-ai.command` is a double-clickable launcher. On first run it creates the venv and installs the GUI extras, loads `.env`, and runs `hamlet-ai gui`. (A py2app `.app` bundle is possible but out of scope for v1.)
+One launcher backs both platforms, so the same checkout runs identically whether you're on a Mac or a Linux box:
+
+- **macOS** — double-click `scripts/hamlet-ai.command` in Finder (or drag it to the Dock).
+- **Linux** — run `scripts/hamlet-ai.sh` from a terminal, or double-click it in your file manager (`.command` just delegates to `.sh`).
+
+On first run the launcher installs any missing native audio libraries (Linux only — via `apt`, prompting for sudo; set `HAMLET_SKIP_SYSDEPS=1` to skip), creates the venv, installs the GUI extras, loads `.env`, and runs `hamlet-ai gui`. (A py2app `.app` bundle is possible but out of scope for v1.)
+
+If you're not on an `apt`-based distro, the launcher prints the package list and you install it with your own package manager (`dnf`, `pacman`, `zypper` — `hamlet-ai doctor` shows the exact command), then re-run.
 
 ---
 
@@ -217,11 +225,13 @@ CI runs lint + the offscreen test suite on Linux (`.github/workflows/ci.yml`). A
 | Clone fails 422 | Audio rejected — confirm a valid, uncorrupted mp3/wav. |
 | Voice times out | Polls for 120s; check status.elevenlabs.io. The poll loop now retries transient network errors. |
 | Ollama provider failing | Start the daemon (`ollama serve`) and pull the model in Settings. |
+| (Linux) recording does nothing / `PortAudio library not found` | Install PortAudio: `sudo apt-get install -y libportaudio2`. Run `hamlet-ai doctor` for your distro's command. |
+| (Linux) playback is silent / cue files won't play | Install a GStreamer MP3 decoder: `sudo apt-get install -y gstreamer1.0-libav gstreamer1.0-plugins-good`. |
 
 ---
 
 ## Project
 
 **Production:** Hamlet.AI — Wember / Wolf359
-**Platform:** Mac Mini M4 / macOS (Linux for CI)
+**Platform:** macOS (Mac Mini M4) and Linux — both first-class for the GUI; CI runs the offscreen suite on Linux
 **API:** ElevenLabs Instant Voice Cloning; Anthropic / OpenAI / Ollama for Script Gen

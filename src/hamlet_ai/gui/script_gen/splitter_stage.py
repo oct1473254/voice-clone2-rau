@@ -39,13 +39,13 @@ class SplitterStage(QWidget):
         layout.addWidget(self.rejected_list, stretch=1)
 
     def on_enter(self) -> None:
-        if self.state.english_text and self.state.parsed_en is None:
+        if self.state.german_text and self.state.parsed_de is None:
             self.run_splitter()
 
     @Slot()
     def run_splitter(self) -> None:
-        parsed = split_script(self.state.english_text)
-        self.state.parsed_en = parsed
+        parsed = split_script(self.state.german_text)
+        self.state.parsed_de = parsed
 
         self.table.setRowCount(len(parsed.lines))
         for r, line in enumerate(parsed.lines):

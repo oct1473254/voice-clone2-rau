@@ -1,9 +1,14 @@
-"""Scene-generation prompt construction, extracted from the legacy CLI.
+"""Scene-generation prompt construction.
 
-The original ``Hamlet-gen5.construct_prompt`` interleaved user input directly
-into the prompt template. We preserve the wording exactly so output quality
-matches what the operator tested, but route the inputs through a
-``ScriptGenParams`` dataclass so the GUI can validate fields before sending.
+The operator-supplied creative brief is fixed: a Pulitzer-style reimagining of
+Hamlet's ghost scene, generated **in German**. Only three inputs vary — the two
+extra characters (Ophelia/Horatio by default, editable) and an optional setting.
+
+The creative paragraph is kept **verbatim** so output quality matches what the
+operator tested. We append a short, separate *formatting* paragraph so the
+generated scene is machine-parseable (``CHARACTER: dialogue`` per line) — the
+splitter and per-line TTS downstream depend on that shape. Without it nothing
+could be voiced.
 """
 from __future__ import annotations
 
@@ -12,39 +17,59 @@ from dataclasses import dataclass
 
 @dataclass
 class ScriptGenParams:
-    play_name: str
-    scene_name: str  # e.g. "Act II, Scene 1" or "ending"
-    character_count: int  # 2..4
-    character_name: str
-    include: str  # person/place/event/thing
-    style: str
+    # The two extra characters alongside Hamlet and the Ghost. Pre-filled but
+    # editable; the setting is optional (blank → the playwright chooses one).
+    character_one: str = "Ophelia"
+    character_two: str = "Horatio"
+    setting: str = ""
 
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if not self.play_name.strip():
-            errors.append("play_name is required")
-        if not self.scene_name.strip():
-            errors.append("scene_name is required")
-        if self.character_count not in (2, 3, 4):
-            errors.append("character_count must be 2, 3, or 4")
-        if not self.character_name.strip():
-            errors.append("character_name is required")
-        if not self.include.strip():
-            errors.append("include (person/place/event/thing) is required")
-        if not self.style.strip():
-            errors.append("style is required")
+        if not self.character_one.strip():
+            errors.append("character_one is required")
+        if not self.character_two.strip():
+            errors.append("character_two is required")
+        # setting is intentionally optional — blank lets the LLM choose.
         return errors
 
 
 def construct_prompt(params: ScriptGenParams) -> str:
-    return f"""
-    You are a talented and creative playwright. Write an alternate {params.scene_name} for {params.play_name}, the play by Shakespeare.
-    The scene should be fifteen to thirty lines of dialogue long, written for {params.character_count} characters.
-    Include {params.character_name.upper()} as a character; other character names should match the original scene.
-    The format of the play MUST include the characters name in all caps followed by a colon. For example, HAMLET:
-    The dialogue should be on the same line as the character name, with no line break.
-    The first line should begin the dialogue, do not include any header information or any lines besides dialogue.
-    The play should be in {params.style} style. You should incorporate {params.include} in the scene.
-    There should be no stage directions, nor any parenthetical remarks that indicate line readings, e.g., (sadly).
-    If more or fewer than {params.character_count} characters appear, rewrite so that exactly {params.character_count} characters appear in the final version.
-    """
+    setting = params.setting.strip()
+    setting_clause = (
+        f"It should be set in, or mention, {setting}."
+        if setting
+        else (
+            "It should be set in, or mention, a contemporary place and moment of "
+            "your choosing that suits the reimagining."
+        )
+    )
+    character_one = params.character_one.strip()
+    character_two = params.character_two.strip()
+
+    creative = (
+        "You are a Pulitzer prize winning playwright who reexamines the classics. "
+        "rewrite the ghost scene from Hamlet but more relevant to 2026, and make it "
+        "less sexist, and less boring. Your script should be a maximum of one page. "
+        "There should no stage directions, except for entrances and and no line "
+        "reading to the actors. Make the dialogue contemporary, taking inspiration "
+        "from John Guare, Eugene O’Neill, Jose Rivera, Brandon jacobs jenkins. "
+        "The scene should include in addition to hamlet and the Ghost, two "
+        f"characters, {character_one} and {character_two}. {setting_clause} "
+        "Please reply with only the scene no commentary. "
+        "Please generate the scene in German language."
+    )
+
+    # Technical formatting scaffolding (not part of the creative brief). Required
+    # so split_script() can parse speakers and per-line TTS can voice each line.
+    formatting = (
+        "Format every spoken line as the speaking character's name in CAPITAL "
+        "LETTERS, followed by a colon and a space, then that character's words on "
+        "the same line, for example:\n"
+        "HAMLET: ...\n"
+        "Put each spoken line on its own line. Write any entrance on its own line "
+        "in square brackets, for example: [OPHELIA tritt auf]. Do not include any "
+        "other stage directions, parenthetical line readings, headings, or "
+        "commentary."
+    )
+
+    return f"{creative}\n\n{formatting}"

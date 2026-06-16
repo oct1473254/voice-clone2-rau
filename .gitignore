@@ -56,3 +56,5 @@ Thumbs.db
 character_lines/
 newHamlet_*.txt
 German_NewHamlet_*.txt
+.env
+.env

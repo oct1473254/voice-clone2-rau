@@ -1,10 +1,15 @@
 """One-page Script Generation tab.
 
-A single form (play, scene, characters, style, …) plus a big **Generate Scene**
-button that runs the whole pipeline — generate → split → translate → TTS →
-copy to the Desktop layout — in one background pass. Progress and detailed log
-lines stream to the shared log pane; this tab shows a compact status + progress
-bar so the operator isn't forced to read the log.
+A small form — the two extra characters (Ophelia/Horatio by default) and an
+optional setting — plus a big **Generate Scene** button that runs the whole
+pipeline in one background pass: generate the German ghost-scene → split →
+translate to English (for review) → TTS the German lines → copy to the Desktop
+layout. The creative brief itself is fixed (see
+``core.script_gen.prompt.construct_prompt``).
+
+Once generation finishes, the full scene is shown to the operator for review —
+**German first** (what will be voiced) then its **English translation** — so the
+text can be checked before/while audio is produced.
 
 The tab owns no threads. It builds a :class:`ScriptGenPipelineWorker` and hands
 it to ``start_worker`` (supplied by MainWindow), which manages the QThread and
@@ -22,9 +27,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -52,30 +57,29 @@ class ScriptGenPanel(QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
 
-        heading = QLabel("Generate a Shakespeare-style scene")
+        heading = QLabel("Generate the Hamlet ghost scene (German)")
         heading.setObjectName("sgHeading")
         layout.addWidget(heading)
 
+        subtitle = QLabel(
+            "A Pulitzer-style reimagining of Hamlet's ghost scene for 2026, "
+            "generated in German. Hamlet and the Ghost are always present; name "
+            "the two other characters and (optionally) a setting."
+        )
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.play_edit = QLineEdit()
-        self.play_edit.setPlaceholderText("e.g. Hamlet")
-        form.addRow("Play", self.play_edit)
-        self.scene_edit = QLineEdit()
-        self.scene_edit.setPlaceholderText("e.g. Act II, Scene 1 — or 'ending'")
-        form.addRow("Scene", self.scene_edit)
-        self.count_spin = QSpinBox()
-        self.count_spin.setRange(2, 4)
-        form.addRow("Number of characters", self.count_spin)
-        self.character_edit = QLineEdit()
-        self.character_edit.setPlaceholderText("character to include, e.g. GHOST")
-        form.addRow("Character to include", self.character_edit)
-        self.include_edit = QLineEdit()
-        self.include_edit.setPlaceholderText("a person, place, event, or thing")
-        form.addRow("Incorporate", self.include_edit)
-        self.style_edit = QLineEdit()
-        self.style_edit.setPlaceholderText("e.g. eerie, comic, noir")
-        form.addRow("Style", self.style_edit)
+        self.character_one_edit = QLineEdit()
+        self.character_one_edit.setText("Ophelia")
+        form.addRow("Character 1", self.character_one_edit)
+        self.character_two_edit = QLineEdit()
+        self.character_two_edit.setText("Horatio")
+        form.addRow("Character 2", self.character_two_edit)
+        self.setting_edit = QLineEdit()
+        self.setting_edit.setPlaceholderText("optional — set in, or mention… (blank = the playwright chooses)")
+        form.addRow("Setting", self.setting_edit)
 
         self.provider_combo = QComboBox()
         for p in ("anthropic", "openai", "ollama"):
@@ -85,9 +89,6 @@ class ScriptGenPanel(QWidget):
         layout.addLayout(form)
 
         opts_row = QHBoxLayout()
-        self.translate_box = QCheckBox("Translate to German")
-        self.translate_box.setChecked(True)
-        opts_row.addWidget(self.translate_box)
         self.tts_box = QCheckBox("Generate audio (TTS)")
         self.tts_box.setChecked(True)
         opts_row.addWidget(self.tts_box)
@@ -110,17 +111,35 @@ class ScriptGenPanel(QWidget):
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-        layout.addStretch(1)
+
+        # ---- Review panes: German (performed) beside English (translation) ----
+        # Side by side so the operator can follow along in both languages at once.
+        review_row = QHBoxLayout()
+
+        german_col = QVBoxLayout()
+        german_col.addWidget(QLabel("German scene (performed — this is what gets voiced):"))
+        self.german_view = QPlainTextEdit()
+        self.german_view.setReadOnly(True)
+        self.german_view.setPlaceholderText("The generated German scene will appear here.")
+        german_col.addWidget(self.german_view, stretch=1)
+        review_row.addLayout(german_col, stretch=1)
+
+        english_col = QVBoxLayout()
+        english_col.addWidget(QLabel("English translation (for review only):"))
+        self.english_view = QPlainTextEdit()
+        self.english_view.setReadOnly(True)
+        self.english_view.setPlaceholderText("An English translation will appear here.")
+        english_col.addWidget(self.english_view, stretch=1)
+        review_row.addLayout(english_col, stretch=1)
+
+        layout.addLayout(review_row, stretch=1)
 
     # ---------- helpers ----------
     def collect_params(self) -> ScriptGenParams:
         return ScriptGenParams(
-            play_name=self.play_edit.text().strip(),
-            scene_name=self.scene_edit.text().strip(),
-            character_count=self.count_spin.value(),
-            character_name=self.character_edit.text().strip(),
-            include=self.include_edit.text().strip(),
-            style=self.style_edit.text().strip(),
+            character_one=self.character_one_edit.text().strip(),
+            character_two=self.character_two_edit.text().strip(),
+            setting=self.setting_edit.text().strip(),
         )
 
     def _set_busy(self, busy: bool) -> None:
@@ -153,12 +172,16 @@ class ScriptGenPanel(QWidget):
         cfg = self._cfg_provider()
         cfg.script_gen.default_provider = self.provider_combo.currentText()
 
+        self.german_view.clear()
+        self.english_view.clear()
+
         worker = ScriptGenPipelineWorker(
             cfg,
             params,
-            translate=self.translate_box.isChecked(),
+            translate=True,  # always produce an English translation for review
             do_tts=self.tts_box.isChecked(),
         )
+        worker.scene_ready.connect(self._on_scene_ready)
         worker.progress.connect(self._on_progress)
         worker.finished.connect(self._on_finished)
         worker.failed.connect(self._on_failed)
@@ -168,6 +191,11 @@ class ScriptGenPanel(QWidget):
         self.progress.setRange(0, 0)  # indeterminate until TTS reports counts
         self.status_label.setText("Working… see the log for details.")
         self._start_worker(worker)
+
+    @Slot(str, str)
+    def _on_scene_ready(self, german: str, english: str) -> None:
+        self.german_view.setPlainText(german)
+        self.english_view.setPlainText(english or "(no English translation available)")
 
     @Slot(int, int)
     def _on_progress(self, done: int, total: int) -> None:

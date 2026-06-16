@@ -25,10 +25,12 @@ OverwriteConfirm = Callable[[list[Path]], bool]
 
 
 # Each tuple: (workspace subpath, desktop target name, suffix filter or None).
+# Audio is the performed (German) lines; TextGerman is what was voiced and
+# TextEnglish is the review translation.
 _PLAN_SPECS = [
-    ("valid_lines/English/output", "Audio", None),
-    ("valid_lines/English", "TextEnglish", ".txt"),
+    ("valid_lines/German/output", "Audio", None),
     ("valid_lines/German", "TextGerman", ".txt"),
+    ("valid_lines/English", "TextEnglish", ".txt"),
     ("cast_of_characters", "Names", ".txt"),
 ]
 

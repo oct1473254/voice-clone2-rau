@@ -47,7 +47,7 @@ class VoicesStage(QWidget):
         self._combos.clear()
 
         existing = self.voice_map.load()
-        characters = self.state.parsed_en.characters if self.state.parsed_en else []
+        characters = self.state.parsed_de.characters if self.state.parsed_de else []
         for character in characters:
             combo = QComboBox()
             for voice_id, label in self.available_voices:

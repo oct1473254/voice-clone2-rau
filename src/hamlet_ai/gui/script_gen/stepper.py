@@ -20,9 +20,9 @@ from hamlet_ai.core.script_gen.prompt import ScriptGenParams
 @dataclass
 class ScriptGenState:
     params: ScriptGenParams | None = None
-    english_text: str = ""
-    parsed_en: ParsedScript | None = None
-    parsed_de: ParsedScript | None = None
+    german_text: str = ""  # generated, performed/voiced language
+    parsed_de: ParsedScript | None = None  # primary (voiced)
+    parsed_en: ParsedScript | None = None  # English translation, review only
     voice_map: dict[str, str] = field(default_factory=dict)
 
 

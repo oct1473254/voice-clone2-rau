@@ -24,10 +24,18 @@ def cfg(tmp_path) -> AppConfig:
 
 # ---------- Panel --------------------------------------------------------
 
-def test_panel_warns_and_does_not_start_when_empty(qtbot, cfg):
+def test_panel_prefills_ophelia_and_horatio(qtbot, cfg):
+    panel = ScriptGenPanel(lambda: cfg, lambda _w: None)
+    qtbot.addWidget(panel)
+    assert panel.character_one_edit.text() == "Ophelia"
+    assert panel.character_two_edit.text() == "Horatio"
+
+
+def test_panel_warns_and_does_not_start_when_character_blank(qtbot, cfg):
     started: list = []
     panel = ScriptGenPanel(lambda: cfg, started.append)
     qtbot.addWidget(panel)
+    panel.character_one_edit.setText("")  # blank a required field
     panel._on_generate()
     assert started == []
     assert "⚠️" in panel.status_label.text()
@@ -37,13 +45,10 @@ def test_panel_starts_worker_with_options_when_valid(qtbot, cfg):
     started: list = []
     panel = ScriptGenPanel(lambda: cfg, started.append)
     qtbot.addWidget(panel)
-    panel.play_edit.setText("Hamlet")
-    panel.scene_edit.setText("ending")
-    panel.character_edit.setText("GHOST")
-    panel.include_edit.setText("a skull")
-    panel.style_edit.setText("eerie")
+    panel.character_one_edit.setText("Marcellus")
+    panel.character_two_edit.setText("Bernardo")
+    panel.setting_edit.setText("a Berlin U-Bahn platform")
     panel.provider_combo.setCurrentText("openai")
-    panel.translate_box.setChecked(False)
     panel.tts_box.setChecked(True)
 
     panel._on_generate()
@@ -51,7 +56,9 @@ def test_panel_starts_worker_with_options_when_valid(qtbot, cfg):
     assert len(started) == 1
     worker = started[0]
     assert isinstance(worker, ScriptGenPipelineWorker)
-    assert worker.translate is False and worker.do_tts is True
+    assert worker.translate is True and worker.do_tts is True  # English always produced
+    assert worker.params.character_one == "Marcellus"
+    assert worker.params.setting == "a Berlin U-Bahn platform"
     assert cfg.script_gen.default_provider == "openai"
     assert not panel.generate_btn.isEnabled()  # busy until finished
 
@@ -59,27 +66,30 @@ def test_panel_starts_worker_with_options_when_valid(qtbot, cfg):
 # ---------- Pipeline worker (dry run) ------------------------------------
 
 def test_pipeline_worker_runs_end_to_end_dry_run(qtbot, cfg, monkeypatch):
+    # German scene out of the LLM; English produced by the (stubbed) translator.
     monkeypatch.setattr(
         workers_mod,
         "llm_generate",
-        lambda *a, **k: "HAMLET: To be, or not to be.\nGHOST: Mark me well.",
+        lambda *a, **k: "HAMLET: Sein oder Nichtsein.\nGEIST: Hör mir zu.",
     )
-    params = ScriptGenParams(
-        play_name="Hamlet",
-        scene_name="ending",
-        character_count=2,
-        character_name="GHOST",
-        include="a skull",
-        style="eerie",
+    monkeypatch.setattr(
+        workers_mod,
+        "translate_scene",
+        lambda parsed, *a, **k: parsed,  # echo back; English text just needs to exist
     )
-    worker = ScriptGenPipelineWorker(cfg, params, translate=False, do_tts=True)
+    params = ScriptGenParams(character_one="Ophelia", character_two="Horatio")
+    worker = ScriptGenPipelineWorker(cfg, params, translate=True, do_tts=True)
+    scenes: list = []
     finished: list = []
+    worker.scene_ready.connect(lambda de, en: scenes.append((de, en)))
     worker.finished.connect(finished.append)
     worker.run()  # synchronous in-test; no QThread needed
 
     assert finished == [cfg.script_gen.base_dir]
-    assert (cfg.script_gen.workspace_dir / "english_scene.txt").exists()
-    # TTS (dry run) produced files copied into the Desktop Audio layout.
+    assert (cfg.script_gen.workspace_dir / "german_scene.txt").exists()
+    # The German scene is surfaced for review (and English alongside it).
+    assert scenes and "Sein oder Nichtsein" in scenes[0][0]
+    # TTS (dry run) voiced the German lines into the Desktop Audio layout.
     audio_dir = cfg.script_gen.base_dir / "Audio"
     assert audio_dir.is_dir()
     assert any(audio_dir.iterdir())

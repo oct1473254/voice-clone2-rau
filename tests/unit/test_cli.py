@@ -47,18 +47,10 @@ def test_script_gen_help(capsys):
     with pytest.raises(SystemExit):
         cli.main(["script-gen", "--help"])
     out = capsys.readouterr().out
-    assert "--play" in out
-    assert "--scene" in out
-    assert "--character-count" in out
+    assert "--character-one" in out
+    assert "--character-two" in out
+    assert "--setting" in out
     assert "--llm" in out
-
-
-def test_script_gen_requires_either_interactive_or_full_args(capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "default_config", lambda: _temp_cfg(tmp_path))
-    rc = cli.main(["script-gen", "--play", "Hamlet"])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "script-gen" in err.lower() or "required" in err.lower() or "--scene" in err
 
 
 def test_voice_clone_routes_to_run_show_via_default_cfg(monkeypatch, tmp_path):
@@ -91,9 +83,9 @@ def test_script_gen_end_to_end_dry_run_via_cli(monkeypatch, tmp_path, capsys):
     cfg.dry_run = True
     monkeypatch.setattr(cli, "default_config", lambda: cfg)
 
-    # Stub the LLM dispatcher so we never hit a real SDK.
+    # Stub the LLM dispatcher so we never hit a real SDK. The scene is German.
     def fake_generate(prompt, provider, model, **_):
-        return "HAMLET: First line.\nGERTRUDE: Second line.\n"
+        return "HAMLET: Erste Zeile.\nGEIST: Zweite Zeile.\n"
 
     monkeypatch.setattr("hamlet_ai.core.script_gen.llm.generate", fake_generate)
     # translate.py also imports generate by reference — patch its symbol too.
@@ -102,20 +94,16 @@ def test_script_gen_end_to_end_dry_run_via_cli(monkeypatch, tmp_path, capsys):
 
     rc = cli.main([
         "script-gen",
-        "--play", "Hamlet",
-        "--scene", "Act I, Scene 1",
-        "--character-count", "2",
-        "--character-name", "Polonius",
-        "--include", "a microphone",
-        "--style", "comic",
+        "--character-one", "Ophelia",
+        "--character-two", "Horatio",
         "--no-translate",
         "--dry-run",
     ])
     assert rc == 0
     workspace = cfg.script_gen.workspace_dir
-    assert (workspace / "english_scene.txt").is_file()
-    assert (workspace / "valid_lines" / "English" / "001-HAMLET.txt").is_file()
-    assert (workspace / "valid_lines" / "English" / "output" / "001-HAMLET.mp3").is_file()
+    assert (workspace / "german_scene.txt").is_file()
+    assert (workspace / "valid_lines" / "German" / "001-HAMLET.txt").is_file()
+    assert (workspace / "valid_lines" / "German" / "output" / "001-HAMLET.mp3").is_file()
     assert (cfg.script_gen.base_dir / "Audio" / "001-HAMLET.mp3").is_file()
 
 

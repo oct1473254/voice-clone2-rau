@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -28,19 +27,15 @@ class InputStage(QWidget):
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.play_edit = QLineEdit()
-        form.addRow("Play", self.play_edit)
-        self.scene_edit = QLineEdit()
-        form.addRow("Scene", self.scene_edit)
-        self.count_spin = QSpinBox()
-        self.count_spin.setRange(2, 4)
-        form.addRow("Character count", self.count_spin)
-        self.character_edit = QLineEdit()
-        form.addRow("Character to include", self.character_edit)
-        self.include_edit = QLineEdit()
-        form.addRow("Incorporate", self.include_edit)
-        self.style_edit = QLineEdit()
-        form.addRow("Style", self.style_edit)
+        self.character_one_edit = QLineEdit()
+        self.character_one_edit.setText("Ophelia")
+        form.addRow("Character 1", self.character_one_edit)
+        self.character_two_edit = QLineEdit()
+        self.character_two_edit.setText("Horatio")
+        form.addRow("Character 2", self.character_two_edit)
+        self.setting_edit = QLineEdit()
+        self.setting_edit.setPlaceholderText("optional — set in, or mention…")
+        form.addRow("Setting", self.setting_edit)
 
         self.provider_combo = QComboBox()
         for p in ("anthropic", "openai", "ollama"):
@@ -59,12 +54,9 @@ class InputStage(QWidget):
 
     def collect_params(self) -> ScriptGenParams:
         return ScriptGenParams(
-            play_name=self.play_edit.text().strip(),
-            scene_name=self.scene_edit.text().strip(),
-            character_count=self.count_spin.value(),
-            character_name=self.character_edit.text().strip(),
-            include=self.include_edit.text().strip(),
-            style=self.style_edit.text().strip(),
+            character_one=self.character_one_edit.text().strip(),
+            character_two=self.character_two_edit.text().strip(),
+            setting=self.setting_edit.text().strip(),
         )
 
     def validate(self) -> list[str]:

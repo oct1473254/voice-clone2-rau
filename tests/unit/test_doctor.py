@@ -12,10 +12,11 @@ def _results_by_name(report):
 
 
 def _run(cfg, **kw):
-    # Default to no external probes so tests stay offline.
+    # Default to no external probes so tests stay offline and host-independent.
     kw.setdefault("client_factory", None)
     kw.setdefault("connection_tester", None)
     kw.setdefault("audio_probe", None)
+    kw.setdefault("platform_probe", None)
     return run_checks(cfg, **kw)
 
 
@@ -86,9 +87,45 @@ def test_audio_probe_reports_devices(dry_cfg, fake_clone_txt):
         client_factory=None,
         connection_tester=None,
         audio_probe=lambda: [(0, "Built-in Mic")],
+        platform_probe=None,
     )
     by = _results_by_name(report)
     assert by["Audio input"].status == OK
+
+
+def test_audio_backends_ok(dry_cfg, fake_clone_txt):
+    from hamlet_ai.platform_support import DepStatus
+
+    report = _run(
+        dry_cfg,
+        platform_probe=lambda: [
+            DepStatus("Audio recording (PortAudio)", True, "loaded"),
+            DepStatus("Audio playback (MP3)", True, "native"),
+        ],
+    )
+    by = _results_by_name(report)
+    assert by["Audio recording (PortAudio)"].status == OK
+    assert by["Audio playback (MP3)"].status == OK
+
+
+def test_audio_backend_missing_warns_with_fix(dry_cfg, fake_clone_txt):
+    from hamlet_ai.platform_support import DepStatus
+
+    report = _run(
+        dry_cfg,
+        platform_probe=lambda: [
+            DepStatus(
+                "Audio recording (PortAudio)",
+                False,
+                "could not load",
+                fix_command="sudo apt-get install -y libportaudio2",
+            ),
+        ],
+    )
+    by = _results_by_name(report)
+    result = by["Audio recording (PortAudio)"]
+    assert result.status == WARN
+    assert "sudo apt-get install -y libportaudio2" in result.detail
 
 
 def test_format_report_contains_summary(dry_cfg, fake_clone_txt):

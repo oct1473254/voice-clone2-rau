@@ -238,7 +238,7 @@ def test_run_show_flags_budget_overrun(dry_cfg, fake_clone_txt, fake_sample_audi
 # ---------- CLI uses label-preserving translation (Fix #1) ----------------
 
 def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys):
-    """The CLI translates per line so German split files stay label-aligned."""
+    """The CLI translates per line so the English split files stay label-aligned."""
     from hamlet_ai import cli
     from hamlet_ai.config import AppConfig, ScriptGenSettings, VoiceCloneSettings
 
@@ -252,10 +252,11 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
     )
     monkeypatch.setattr(cli, "default_config", lambda: cfg)
 
-    def fake_english(*_a, **_k):
-        return "HAMLET: To be.\nGERTRUDE: Speak, son."
+    # The LLM generates the performed (German) scene.
+    def fake_german(*_a, **_k):
+        return "HAMLET: Sein.\nGERTRUDE: Sprich, Sohn."
 
-    monkeypatch.setattr("hamlet_ai.core.script_gen.llm.generate", fake_english)
+    monkeypatch.setattr("hamlet_ai.core.script_gen.llm.generate", fake_german)
 
     captured = {}
 
@@ -263,7 +264,7 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
         captured["called"] = True
         from dataclasses import replace
 
-        new = [replace(p, dialogue=f"DE-{p.dialogue}") for p in parsed.lines]
+        new = [replace(p, dialogue=f"EN-{p.dialogue}") for p in parsed.lines]
         return replace(parsed, lines=new)
 
     monkeypatch.setattr(
@@ -273,12 +274,8 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
     rc = cli.main(
         [
             "script-gen",
-            "--play", "Hamlet",
-            "--scene", "Act I, Scene 1",
-            "--character-count", "2",
-            "--character-name", "HAMLET",
-            "--include", "a raven",
-            "--style", "brooding",
+            "--character-one", "Ophelia",
+            "--character-two", "Horatio",
             "--llm", "anthropic",
             "--no-tts",
             "--dry-run",
@@ -286,8 +283,12 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
     )
     assert rc == 0
     assert captured.get("called") is True
-    # German split files exist and carry the same character labels as English.
+    # German split files exist; the English translation carries the same labels.
     de_dir = cfg.script_gen.workspace_dir / "valid_lines" / "German"
     de_names = sorted(p.name for p in de_dir.glob("*.txt"))
     assert any("HAMLET" in n for n in de_names)
     assert any("GERTRUDE" in n for n in de_names)
+    en_dir = cfg.script_gen.workspace_dir / "valid_lines" / "English"
+    en_names = sorted(p.name for p in en_dir.glob("*.txt"))
+    assert any("HAMLET" in n for n in en_names)
+    assert any("GERTRUDE" in n for n in en_names)

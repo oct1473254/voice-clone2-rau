@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **HAMLET.AI — Voice Clone System** for the live theatrical production *Wember / Wolf359*. A single Python script captures a volunteer's voice during performance, clones it via ElevenLabs Instant Voice Cloning, and generates pre-scripted audio lines into a QLab-watched folder — all in under two minutes.
 
+## Cross-platform (macOS + Linux)
+
+The app (the `hamlet_ai` package; `voiceclone2.py`/`Hamlet-gen5.py` are now CLI shims) runs identically on macOS and Linux. The Python stack — PySide6, sounddevice, QtMultimedia — is portable; the only OS difference is three **native** libraries that macOS bundles but Linux installs separately:
+
+- **PortAudio** (`libportaudio2`) — sounddevice backend for recording.
+- **GStreamer MP3 decoder** (`gstreamer1.0-libav`, `gstreamer1.0-plugins-good`) — QtMultimedia MP3 playback.
+- **xcb-cursor** (`libxcb-cursor0`) — Qt's X11 (`xcb`) platform plugin; without it the GUI aborts at startup ("Could not load the Qt platform plugin 'xcb'"). Linux/X11 only — Wayland uses the `wayland` plugin.
+
+`src/hamlet_ai/platform_support.py` probes each and returns the per-distro install command; `doctor` surfaces any gap as a WARN with that command (via `probe_native_deps()`). The launcher `scripts/hamlet-ai.sh` auto-installs them on Linux first run (macOS uses `scripts/hamlet-ai.command`, which delegates to the `.sh`). When touching audio, windowing, or launchers, keep both OSes working and add a `platform_support` probe rather than hardcoding a path.
+
 ## Running the Script
 
 ```bash

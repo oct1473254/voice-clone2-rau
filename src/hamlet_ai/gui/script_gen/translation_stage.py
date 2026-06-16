@@ -23,7 +23,7 @@ class TranslationStage(QWidget):
         self,
         cfg: AppConfig,
         state,
-        target_language: str = "German",
+        target_language: str = "English",
         clients: LLMClients | None = None,
         parent: QWidget | None = None,
     ):
@@ -43,14 +43,14 @@ class TranslationStage(QWidget):
         layout.addWidget(self.run_btn)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["character", "English", target_language])
+        self.table.setHorizontalHeaderLabels(["character", "German", target_language])
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table, stretch=1)
 
     @Slot()
     def run_translation(self) -> None:
         self.warning_label.setText("")
-        parsed = self.state.parsed_en
+        parsed = self.state.parsed_de
         if parsed is None:
             self.warning_label.setText("Run the Splitter step first.")
             return
@@ -64,11 +64,11 @@ class TranslationStage(QWidget):
                 f"Review before continuing."
             )
             return
-        self.state.parsed_de = translated
+        self.state.parsed_en = translated
 
         self.table.setRowCount(len(parsed.lines))
-        for r, (en, de) in enumerate(zip(parsed.lines, translated.lines)):
-            self.table.setItem(r, 0, QTableWidgetItem(en.character))
-            self.table.setItem(r, 1, QTableWidgetItem(en.dialogue))
-            self.table.setItem(r, 2, QTableWidgetItem(de.dialogue))
+        for r, (de, en) in enumerate(zip(parsed.lines, translated.lines)):
+            self.table.setItem(r, 0, QTableWidgetItem(de.character))
+            self.table.setItem(r, 1, QTableWidgetItem(de.dialogue))
+            self.table.setItem(r, 2, QTableWidgetItem(en.dialogue))
         self.translated.emit(len(translated.lines))

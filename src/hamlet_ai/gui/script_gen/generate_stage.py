@@ -34,7 +34,7 @@ class GenerateStage(QWidget):
         self.generate_btn.clicked.connect(self._on_generate)
         layout.addWidget(self.generate_btn)
 
-        layout.addWidget(QLabel("Generated scene (editable):"))
+        layout.addWidget(QLabel("Generated German scene (editable):"))
         self.result_edit = QPlainTextEdit()
         layout.addWidget(self.result_edit, stretch=1)
 
@@ -70,4 +70,4 @@ class GenerateStage(QWidget):
         self.generated.emit(text)
 
     def save(self) -> None:
-        self.state.english_text = self.result_edit.toPlainText()
+        self.state.german_text = self.result_edit.toPlainText()

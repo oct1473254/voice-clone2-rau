@@ -161,6 +161,31 @@ def _check_expired_voices(cfg: AppConfig, report: DoctorReport, now: datetime | 
         report.add("Retention sweep", OK, "no expired clones pending")
 
 
+def _check_audio_backends(cfg: AppConfig, report: DoctorReport, platform_probe) -> None:
+    """Native libs behind recording (PortAudio) and MP3 playback (GStreamer).
+
+    These are bundled on macOS but are separate system packages on Linux, so a
+    missing one is the most common cause of "the GUI runs but recording/playback
+    is silent". Reported as WARN with the exact install command so the operator
+    can fix it before a show.
+    """
+    if platform_probe is None:
+        return
+    try:
+        deps = platform_probe()
+    except Exception as e:  # noqa: BLE001
+        report.add("Audio backends", WARN, f"could not probe: {e}")
+        return
+    for dep in deps:
+        if dep.available:
+            report.add(dep.name, OK, dep.detail)
+        else:
+            detail = dep.detail
+            if dep.fix_command:
+                detail += f" — fix: {dep.fix_command}"
+            report.add(dep.name, WARN, detail)
+
+
 def _check_audio_devices(cfg: AppConfig, report: DoctorReport, audio_probe) -> None:
     if audio_probe is None:
         return
@@ -197,6 +222,12 @@ def _default_audio_probe():
     return AudioRecorder.list_input_devices()
 
 
+def _default_platform_probe():
+    from hamlet_ai.platform_support import probe_native_deps
+
+    return probe_native_deps()
+
+
 # Sentinel: distinguishes "use the real default probe" from None ("skip this probe").
 _DEFAULT = object()
 
@@ -207,6 +238,7 @@ def run_checks(
     client_factory: Callable | None = _DEFAULT,
     connection_tester: Callable | None = _DEFAULT,
     audio_probe: Callable | None = _DEFAULT,
+    platform_probe: Callable | None = _DEFAULT,
     now: datetime | None = None,
 ) -> DoctorReport:
     # Resolve sentinels via module globals at call time so tests can monkeypatch
@@ -217,6 +249,8 @@ def run_checks(
         connection_tester = _default_connection_tester
     if audio_probe is _DEFAULT:
         audio_probe = _default_audio_probe
+    if platform_probe is _DEFAULT:
+        platform_probe = _default_platform_probe
 
     report = DoctorReport()
     _check_dry_run(cfg, report)
@@ -227,6 +261,7 @@ def run_checks(
     _check_qlab_files(cfg, report)
     _check_stale_samples(cfg, report)
     _check_expired_voices(cfg, report, now)
+    _check_audio_backends(cfg, report, platform_probe)
     _check_audio_devices(cfg, report, audio_probe)
     return report
 

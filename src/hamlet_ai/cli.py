@@ -47,19 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Retention policy for the cloned voice.",
     )
 
-    sg = sub.add_parser("script-gen", help="Generate a Shakespeare-style scene.")
+    sg = sub.add_parser("script-gen", help="Generate the German Hamlet ghost scene.")
     sg.add_argument("--interactive", action="store_true", help="Prompt for inputs (legacy behavior).")
-    sg.add_argument("--play", help="Shakespeare play name.")
-    sg.add_argument("--scene", help="Scene label, e.g. 'Act II, Scene 1' or 'ending'.")
-    sg.add_argument("--character-count", type=int, choices=range(2, 5), help="Number of characters (2-4).")
-    sg.add_argument("--character-name", help="Required character to include.")
-    sg.add_argument("--include", help="Person/place/event/thing to incorporate.")
-    sg.add_argument("--style", help="Dialogue style.")
+    sg.add_argument("--character-one", default="Ophelia", help="First extra character (default: Ophelia).")
+    sg.add_argument("--character-two", default="Horatio", help="Second extra character (default: Horatio).")
+    sg.add_argument("--setting", default="", help="Optional setting to set in / mention (blank = LLM chooses).")
     sg.add_argument("--llm", choices=("anthropic", "openai", "ollama"), help="LLM provider.")
     sg.add_argument(
         "--no-translate",
         action="store_true",
-        help="Skip the German translation step.",
+        help="Skip the English review translation step.",
     )
     sg.add_argument(
         "--no-tts",
@@ -116,33 +113,18 @@ def _gather_script_gen_params(args: argparse.Namespace):
     from hamlet_ai.core.script_gen.prompt import ScriptGenParams
 
     if args.interactive:
-        play_name = input("Please enter the name of a Shakespeare play: ")
-        scene_name = input("Please enter 'ending', or the Act and Scene as in 'Act X, Scene Y': ")
-        character_count = int(input("Please enter number of characters, from 2 - 4: "))
-        character_name = input("Please enter the name a character to include: ")
-        include = input("Please enter a person, place, event, or thing to incorporate: ")
-        style = input("Please enter the style of the dialogue: ")
+        character_one = input("First extra character [Ophelia]: ").strip() or "Ophelia"
+        character_two = input("Second extra character [Horatio]: ").strip() or "Horatio"
+        setting = input("Optional setting to set in / mention (blank = LLM chooses): ").strip()
         return ScriptGenParams(
-            play_name=play_name,
-            scene_name=scene_name,
-            character_count=character_count,
-            character_name=character_name,
-            include=include,
-            style=style,
-        )
-    required = ("play", "scene", "character_count", "character_name", "include", "style")
-    missing = [r for r in required if getattr(args, r) in (None, "")]
-    if missing:
-        raise SystemExit(
-            f"❌ script-gen requires --interactive or all of: {', '.join('--' + r.replace('_', '-') for r in required)}"
+            character_one=character_one,
+            character_two=character_two,
+            setting=setting,
         )
     return ScriptGenParams(
-        play_name=args.play,
-        scene_name=args.scene,
-        character_count=args.character_count,
-        character_name=args.character_name,
-        include=args.include,
-        style=args.style,
+        character_one=args.character_one,
+        character_two=args.character_two,
+        setting=args.setting,
     )
 
 
@@ -180,10 +162,10 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
     provider = LLMProvider(cfg.script_gen.default_provider)
     model = cfg.script_gen.models[provider.value]
 
-    print(f"🎭 Generating scene via {provider.value} ({model})...")
+    print(f"🎭 Generating German scene via {provider.value} ({model})...")
     prompt = construct_prompt(params)
     try:
-        english = generate(
+        german = generate(
             prompt,
             provider,
             model,
@@ -194,47 +176,52 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
         print(f"❌ LLM generation failed: {e}", file=sys.stderr)
         return 1
 
-    en_path = workspace / "english_scene.txt"
-    en_path.parent.mkdir(parents=True, exist_ok=True)
-    en_path.write_text(english, encoding="utf-8")
-    print(f"📝 English scene saved: {en_path}")
+    de_path = workspace / "german_scene.txt"
+    de_path.parent.mkdir(parents=True, exist_ok=True)
+    de_path.write_text(german, encoding="utf-8")
+    print(f"📝 German scene saved: {de_path}")
 
-    # Split English first, then translate line-by-line. This keeps each German
-    # line aligned to its English character label and line_id (Step 6) instead
-    # of translating the whole scene and re-splitting, which can drift.
-    parsed_en = split_script(english)
-    write_split_files(parsed_en, workspace, language="English")
-    print(f"🪓 Split {len(parsed_en.lines)} English lines.")
+    # German is the performed language. Split it first, then translate
+    # line-by-line into English so each review line stays aligned to its German
+    # character label and line_id (instead of translating + re-splitting, which
+    # can drift).
+    parsed_de = split_script(german)
+    write_split_files(parsed_de, workspace, language="German")
+    print(f"🪓 Split {len(parsed_de.lines)} German lines.")
+    print("--- German scene ---")
+    for line in parsed_de.lines:
+        print(f"{line.character}: {line.dialogue}")
 
-    parsed_de = None
     if not args.no_translate:
-        print("🌍 Translating to German (per line)...")
+        print("🌍 Translating to English for review (per line)...")
         try:
-            parsed_de = translate_scene(parsed_en, cfg, target_language="German")
+            parsed_en = translate_scene(parsed_de, cfg, target_language="English")
         except TranslationCountMismatch as e:
-            print(f"⚠️  Translation skipped (line count mismatch): {e}", file=sys.stderr)
-            parsed_de = None
+            print(f"⚠️  English translation skipped (line count mismatch): {e}", file=sys.stderr)
+            parsed_en = None
         except Exception as e:  # noqa: BLE001
-            print(f"⚠️  Translation failed: {e}", file=sys.stderr)
-            parsed_de = None
-        if parsed_de is not None:
-            de_text = "\n".join(
-                f"{line.character}: {line.dialogue}" for line in parsed_de.lines
+            print(f"⚠️  English translation failed: {e}", file=sys.stderr)
+            parsed_en = None
+        if parsed_en is not None:
+            en_text = "\n".join(
+                f"{line.character}: {line.dialogue}" for line in parsed_en.lines
             )
-            de_path = workspace / "german_scene.txt"
-            de_path.write_text(de_text, encoding="utf-8")
-            print(f"📝 German scene saved: {de_path}")
-            write_split_files(parsed_de, workspace, language="German")
-            print(f"🪓 Split {len(parsed_de.lines)} German lines.")
+            en_path = workspace / "english_scene.txt"
+            en_path.write_text(en_text, encoding="utf-8")
+            print(f"📝 English scene saved: {en_path}")
+            write_split_files(parsed_en, workspace, language="English")
+            print(f"🪓 Split {len(parsed_en.lines)} English lines.")
+            print("--- English translation ---")
+            print(en_text)
 
     if not args.no_tts:
         voice_map = CharacterVoiceMap(cfg.script_gen.character_voices_path)
-        en_output = workspace / "valid_lines" / "English" / "output"
-        en_output.mkdir(parents=True, exist_ok=True)
-        print(f"🔊 Synthesizing {len(parsed_en.lines)} English lines...")
-        for i, line in enumerate(parsed_en.lines, start=1):
+        de_output = workspace / "valid_lines" / "German" / "output"
+        de_output.mkdir(parents=True, exist_ok=True)
+        print(f"🔊 Synthesizing {len(parsed_de.lines)} German lines...")
+        for i, line in enumerate(parsed_de.lines, start=1):
             voice_id = voice_map.resolve(line.character)
-            out = en_output / f"{line.line_number:03d}-{line.character}.mp3"
+            out = de_output / f"{line.line_number:03d}-{line.character}.mp3"
             try:
                 synthesize_line(cfg, line.dialogue, voice_id, out)
             except Exception as e:  # noqa: BLE001 — keep going on per-line failure

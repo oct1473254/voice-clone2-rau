@@ -220,12 +220,16 @@ class SplitterWorker(_WorkerBase):
 class ScriptGenPipelineWorker(_WorkerBase):
     """Run the whole one-page Script Gen flow in a single background pass.
 
-    Mirrors ``cli._run_script_gen``: generate → split → (translate) → (TTS) →
-    copy to the Desktop layout. Emits ``log`` lines throughout, ``progress`` for
-    the per-line TTS step, and ``finished(desktop_root)`` on success. Per-line
-    TTS failures are logged but never abort the run.
+    Generate (German) → split → (translate to English for review) → (TTS the
+    German lines) → copy to the Desktop layout. German is the performed/voiced
+    language; English is produced only so the operator can review what will be
+    voiced. Emits ``log`` lines throughout, ``scene_ready(german, english)`` once
+    both texts are known, ``progress`` for the per-line TTS step, and
+    ``finished(desktop_root)`` on success. Per-line TTS failures are logged but
+    never abort the run.
     """
 
+    scene_ready = Signal(str, str)  # german_text, english_text (english may be "")
     progress = Signal(int, int)  # done, total (TTS phase)
     finished = Signal(object)  # Path — the Desktop output root
 
@@ -257,9 +261,9 @@ class ScriptGenPipelineWorker(_WorkerBase):
             provider = LLMProvider(self.cfg.script_gen.default_provider)
             model = self.cfg.script_gen.models[provider.value]
 
-            self.log.emit(f"🎭 Generating scene via {provider.value} ({model})...")
+            self.log.emit(f"🎭 Generating German scene via {provider.value} ({model})...")
             prompt = construct_prompt(self.params)
-            english = llm_generate(
+            german = llm_generate(
                 prompt,
                 provider,
                 model,
@@ -267,42 +271,48 @@ class ScriptGenPipelineWorker(_WorkerBase):
                 openai_api_key=self.cfg.openai_api_key,
                 clients=self.clients,
             )
-            en_path = workspace / "english_scene.txt"
-            en_path.parent.mkdir(parents=True, exist_ok=True)
-            en_path.write_text(english, encoding="utf-8")
-            self.log.emit(f"📝 English scene saved: {en_path}")
+            de_path = workspace / "german_scene.txt"
+            de_path.parent.mkdir(parents=True, exist_ok=True)
+            de_path.write_text(german, encoding="utf-8")
+            self.log.emit(f"📝 German scene saved: {de_path}")
 
-            parsed_en = split_script(english)
-            write_split_files(parsed_en, workspace, language="English")
-            self.log.emit(f"🪓 Split {len(parsed_en.lines)} English lines.")
+            parsed_de = split_script(german)
+            write_split_files(parsed_de, workspace, language="German")
+            self.log.emit(f"🪓 Split {len(parsed_de.lines)} German lines.")
 
+            english_text = ""
             if self.translate:
-                self.log.emit("🌍 Translating to German (per line)...")
+                self.log.emit("🌍 Translating to English for review (per line)...")
                 try:
-                    parsed_de = translate_scene(parsed_en, self.cfg, target_language="German", clients=self.clients)
+                    parsed_en = translate_scene(parsed_de, self.cfg, target_language="English", clients=self.clients)
                 except TranslationCountMismatch as e:
-                    self.log.emit(f"⚠️  Translation skipped (line count mismatch): {e}")
-                    parsed_de = None
+                    self.log.emit(f"⚠️  English translation skipped (line count mismatch): {e}")
+                    parsed_en = None
                 except Exception as e:  # noqa: BLE001
-                    self.log.emit(f"⚠️  Translation failed: {e}")
-                    parsed_de = None
-                if parsed_de is not None:
-                    de_text = "\n".join(
-                        f"{line.character}: {line.dialogue}" for line in parsed_de.lines
+                    self.log.emit(f"⚠️  English translation failed: {e}")
+                    parsed_en = None
+                if parsed_en is not None:
+                    english_text = "\n".join(
+                        f"{line.character}: {line.dialogue}" for line in parsed_en.lines
                     )
-                    (workspace / "german_scene.txt").write_text(de_text, encoding="utf-8")
-                    write_split_files(parsed_de, workspace, language="German")
-                    self.log.emit(f"🪓 Split {len(parsed_de.lines)} German lines.")
+                    (workspace / "english_scene.txt").write_text(english_text, encoding="utf-8")
+                    write_split_files(parsed_en, workspace, language="English")
+                    self.log.emit(f"🪓 Split {len(parsed_en.lines)} English lines.")
+
+            german_text = "\n".join(
+                f"{line.character}: {line.dialogue}" for line in parsed_de.lines
+            )
+            self.scene_ready.emit(german_text, english_text)
 
             if self.do_tts:
                 voice_map = CharacterVoiceMap(self.cfg.script_gen.character_voices_path)
-                en_output = workspace / "valid_lines" / "English" / "output"
-                en_output.mkdir(parents=True, exist_ok=True)
-                total = len(parsed_en.lines)
-                self.log.emit(f"🔊 Synthesizing {total} English lines...")
-                for i, line in enumerate(parsed_en.lines, start=1):
+                de_output = workspace / "valid_lines" / "German" / "output"
+                de_output.mkdir(parents=True, exist_ok=True)
+                total = len(parsed_de.lines)
+                self.log.emit(f"🔊 Synthesizing {total} German lines...")
+                for i, line in enumerate(parsed_de.lines, start=1):
                     voice_id = voice_map.resolve(line.character)
-                    out = en_output / f"{line.line_number:03d}-{line.character}.mp3"
+                    out = de_output / f"{line.line_number:03d}-{line.character}.mp3"
                     self.log.emit(f"[{i}/{total}] {out.name}")
                     try:
                         synthesize_line(self.cfg, line.dialogue, voice_id, out, log_fn=self.log.emit)

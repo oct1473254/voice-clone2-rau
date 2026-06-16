@@ -9,13 +9,15 @@ from hamlet_ai.core.script_gen.export import copy_to_desktop, reset_workspace
 
 
 def _populate_workspace(workspace: Path) -> None:
-    (workspace / "valid_lines" / "English").mkdir(parents=True)
-    (workspace / "valid_lines" / "English" / "001-HAMLET.txt").write_text("HAMLET: Hi.")
-    (workspace / "valid_lines" / "English" / "output").mkdir()
-    (workspace / "valid_lines" / "English" / "output" / "001-HAMLET.mp3").write_bytes(b"AUDIO_EN")
-
+    # German is the performed/voiced language; its output dir holds the audio.
     (workspace / "valid_lines" / "German").mkdir(parents=True)
     (workspace / "valid_lines" / "German" / "001-HAMLET.txt").write_text("HAMLET: Hallo.")
+    (workspace / "valid_lines" / "German" / "output").mkdir()
+    (workspace / "valid_lines" / "German" / "output" / "001-HAMLET.mp3").write_bytes(b"AUDIO_DE")
+
+    # English is the review translation (text only).
+    (workspace / "valid_lines" / "English").mkdir(parents=True)
+    (workspace / "valid_lines" / "English" / "001-HAMLET.txt").write_text("HAMLET: Hi.")
 
     (workspace / "cast_of_characters").mkdir()
     (workspace / "cast_of_characters" / "01-HAMLET.txt").touch()
@@ -26,9 +28,9 @@ def test_copy_to_desktop_populates_each_target(tmp_path):
     desktop = tmp_path / "Desktop" / "LLM-H"
     _populate_workspace(workspace)
     paths = copy_to_desktop(workspace, desktop, log_fn=lambda *_: None)
-    assert (paths["audio"] / "001-HAMLET.mp3").read_bytes() == b"AUDIO_EN"
-    assert (paths["text_english"] / "001-HAMLET.txt").read_text() == "HAMLET: Hi."
+    assert (paths["audio"] / "001-HAMLET.mp3").read_bytes() == b"AUDIO_DE"
     assert (paths["text_german"] / "001-HAMLET.txt").read_text() == "HAMLET: Hallo."
+    assert (paths["text_english"] / "001-HAMLET.txt").read_text() == "HAMLET: Hi."
     assert (paths["names"] / "01-HAMLET.txt").is_file()
 
 
@@ -38,8 +40,8 @@ def test_copy_to_desktop_is_not_destructive(tmp_path):
     desktop = tmp_path / "Desktop" / "LLM-H"
     _populate_workspace(workspace)
     copy_to_desktop(workspace, desktop, log_fn=lambda *_: None)
-    assert (workspace / "valid_lines" / "English" / "001-HAMLET.txt").is_file()
-    assert (workspace / "valid_lines" / "English" / "output" / "001-HAMLET.mp3").is_file()
+    assert (workspace / "valid_lines" / "German" / "001-HAMLET.txt").is_file()
+    assert (workspace / "valid_lines" / "German" / "output" / "001-HAMLET.mp3").is_file()
 
 
 def test_copy_to_desktop_handles_missing_subfolders(tmp_path):
