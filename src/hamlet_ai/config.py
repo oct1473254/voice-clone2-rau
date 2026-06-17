@@ -59,7 +59,7 @@ class VoiceCloneSettings:
     # under two minutes. run_show times itself against this and flags overruns so
     # the GUI can offer fallback (stock voice / restore last good).
     target_total_seconds: float = 120.0
-    model_id: str = "eleven_v3"
+    model_id: str = "eleven_multilingual_v2"
     voice_settings: dict[str, float] = field(
         default_factory=lambda: {
             "stability": 0.3,
@@ -110,7 +110,7 @@ class ScriptGenSettings:
             "ollama": "llama3.1",
         }
     )
-    tts_model_id: str = "eleven_v3"
+    tts_model_id: str = "eleven_multilingual_v2"
     tts_voice_settings: dict[str, float] = field(
         default_factory=lambda: {
             "stability": 0.5,

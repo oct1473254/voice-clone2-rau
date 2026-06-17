@@ -30,7 +30,7 @@ def _cfg() -> AppConfig:
 # --- Module-level constants kept for backward compatibility ----------------
 API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 DRY_RUN = True
-MODEL_ID = "eleven_v3"
+MODEL_ID = "eleven_multilingual_v2"
 BASE_DIR = os.path.expanduser("~/Desktop/VOICE-CLONE")
 SCRIPT_FILE = os.path.join(BASE_DIR, "SCRIPT", "clone.txt")
 SAMPLE_DIR = os.path.join(BASE_DIR, "SAMPLE")

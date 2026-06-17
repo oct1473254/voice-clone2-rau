@@ -42,7 +42,7 @@ def test_default_config_voice_settings_match_voiceclone2_globals():
     }
     assert cfg.voice_clone.clone_poll_interval == 5
     assert cfg.voice_clone.clone_timeout == 120
-    assert cfg.voice_clone.model_id == "eleven_v3"
+    assert cfg.voice_clone.model_id == "eleven_multilingual_v2"
 
 
 def test_default_config_script_gen_provider_defaults():

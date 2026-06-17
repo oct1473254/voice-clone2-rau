@@ -4,13 +4,12 @@ JSON layout::
 
     {
       "HAMLET":   "KVvlsr2Tb3CgvisbEDHy",
-      "GERTRUDE": "74gFutvuL77B9bbrUgOO",
-      "_default": "Q9YXNHUieMKkNdy2cG6m"
+      "_default": "TUKJhQmz3RPYBNAgC5A1"
     }
 
 The ``_default`` entry is used when a detected character has no explicit
-mapping. Initial defaults match the historical hardcoded mapping in
-``Hamlet-gen5.py`` so existing shows keep their familiar voices.
+mapping. The shipped default is a single German voice used for the whole
+scene; add per-character entries here or via voices.json to override it.
 """
 from __future__ import annotations
 
@@ -21,10 +20,11 @@ from pathlib import Path
 
 
 LEGACY_DEFAULT_MAP: dict[str, str] = {
-    "HAMLET": "KVvlsr2Tb3CgvisbEDHy",
-    "GERTRUDE": "74gFutvuL77B9bbrUgOO",
-    "POLONIUS": "1RowW8ZFuVniHZV7vBo4",
-    "_default": "Q9YXNHUieMKkNdy2cG6m",
+    # German voice for the Wember / Wolf359 ghost lines. Every character falls
+    # through to _default (resolve() does this when a character has no explicit
+    # entry), so one valid German voice covers the whole scene. The previous
+    # per-character IDs pointed at a retired ElevenLabs account and 404'd.
+    "_default": "TUKJhQmz3RPYBNAgC5A1",
 }
 
 
