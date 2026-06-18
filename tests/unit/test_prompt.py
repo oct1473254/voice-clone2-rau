@@ -1,7 +1,11 @@
 """ScriptGenParams + construct_prompt: the fixed German ghost-scene brief."""
 from __future__ import annotations
 
-from hamlet_ai.core.script_gen.prompt import ScriptGenParams, construct_prompt
+from hamlet_ai.core.script_gen.prompt import (
+    DEFAULT_PROMPT_TEMPLATE,
+    ScriptGenParams,
+    construct_prompt,
+)
 
 
 def test_defaults_are_ophelia_and_horatio():
@@ -50,3 +54,32 @@ def test_construct_prompt_substitutes_custom_characters_and_setting():
 def test_construct_prompt_blank_setting_leaves_choice_to_llm():
     prompt = construct_prompt(ScriptGenParams(setting=""))
     assert "of your choosing" in prompt
+
+
+def test_custom_template_fills_placeholder_tokens():
+    template = "Scene with {character_one} and {character_two}. {setting_clause}"
+    prompt = construct_prompt(
+        ScriptGenParams(character_one="A", character_two="B", setting="Mars"),
+        template,
+    )
+    assert prompt == "Scene with A and B. It should be set in, or mention, Mars."
+
+
+def test_blank_template_falls_back_to_default():
+    a = construct_prompt(ScriptGenParams(), "")
+    b = construct_prompt(ScriptGenParams(), None)
+    c = construct_prompt(ScriptGenParams(), "   ")
+    assert a == b == c
+    assert "Pulitzer" in a
+
+
+def test_custom_template_with_stray_braces_does_not_raise():
+    # A hand-edited template may contain stray/unknown braces; literal replacement
+    # must leave them untouched rather than raising (unlike str.format).
+    prompt = construct_prompt(ScriptGenParams(), "stray { brace and {unknown}")
+    assert prompt == "stray { brace and {unknown}"
+
+
+def test_default_template_constant_renders_to_known_prompt():
+    rendered = construct_prompt(ScriptGenParams(), DEFAULT_PROMPT_TEMPLATE)
+    assert rendered == construct_prompt(ScriptGenParams())

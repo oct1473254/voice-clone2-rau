@@ -43,7 +43,9 @@ class GenerateStage(QWidget):
 
     def on_enter(self) -> None:
         if self.state.params is not None:
-            self.prompt_view.setPlainText(construct_prompt(self.state.params))
+            self.prompt_view.setPlainText(
+                construct_prompt(self.state.params, self.cfg.script_gen.prompt_template)
+            )
 
     @Slot()
     def _on_generate(self) -> None:
@@ -54,7 +56,7 @@ class GenerateStage(QWidget):
         model = self.cfg.script_gen.models[provider.value]
         try:
             text = generate(
-                construct_prompt(self.state.params),
+                construct_prompt(self.state.params, self.cfg.script_gen.prompt_template),
                 provider,
                 model,
                 anthropic_api_key=self.cfg.anthropic_api_key,

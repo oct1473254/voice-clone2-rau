@@ -103,6 +103,9 @@ class ScriptGenSettings:
     workspace_dir: Path = Path.home() / ".cache" / "hamlet-ai" / "script_gen_workspace"
     default_provider: str = "anthropic"
     translation_provider: str | None = None  # None → reuse default_provider
+    # Operator override for the scene-generation prompt (edited in the Prompt
+    # tab). None/blank → use prompt.DEFAULT_PROMPT_TEMPLATE. Persisted to disk.
+    prompt_template: str | None = None
     models: dict[str, str] = field(
         default_factory=lambda: {
             "anthropic": "claude-sonnet-4-6",

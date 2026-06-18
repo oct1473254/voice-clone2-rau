@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from hamlet_ai.config import AppConfig, save_config
 from hamlet_ai.gui.consent_dialog import ConsentDialog
+from hamlet_ai.gui.script_gen.prompt_tab import PromptTab
 from hamlet_ai.gui.script_gen.simple_tab import ScriptGenPanel
 from hamlet_ai.gui.settings_dialog import SettingsDialog
 from hamlet_ai.gui.voice_clone.record_tab import RecordTab
@@ -68,6 +69,12 @@ class MainWindow(QMainWindow):
         self.record_tab.recording_saved.connect(lambda _p: self.set_status("ready"))
         self.record_tab.clone_requested.connect(self._on_clone_requested)
         self.tabs.addTab(self.record_tab, "Voice Clone")
+
+        self.prompt_tab = PromptTab(
+            cfg_provider=lambda: self.cfg,
+            on_save=self._persist_prompt,
+        )
+        self.tabs.addTab(self.prompt_tab, "Prompt")
 
         self._build_toolbar()
         self._build_status_bar()
@@ -181,6 +188,9 @@ class MainWindow(QMainWindow):
         # Lock risky controls.
         if hasattr(self, "settings_action"):
             self.settings_action.setEnabled(not is_locked("settings", sm))
+        # The prompt editor is settings-like — lock it during a live show too.
+        if hasattr(self, "prompt_tab"):
+            self.prompt_tab.set_locked(is_locked("settings", sm))
         # "Clear Old Runs" is destructive — lock it during a live show.
         if hasattr(self, "script_gen_tab"):
             self.script_gen_tab.reset_btn.setEnabled(not is_locked("reset_workspace", sm))
@@ -246,6 +256,15 @@ class MainWindow(QMainWindow):
                 self.log_pane.append_message(f"Failed to save settings: {e}")
             self.cfg_changed.emit()
         return result
+
+    def _persist_prompt(self) -> None:
+        """Save the edited prompt template to disk (called by the Prompt tab)."""
+        try:
+            save_config(self.cfg)
+            self.log_pane.append_message("Prompt template saved.")
+        except OSError as e:
+            self.log_pane.append_message(f"Failed to save prompt: {e}")
+        self.cfg_changed.emit()
 
     # ---------- Worker wiring helper ----------
     def wire_worker_logging(self, worker) -> None:

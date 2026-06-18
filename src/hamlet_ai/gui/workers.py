@@ -166,7 +166,7 @@ class LLMGenerationWorker(_WorkerBase):
             provider = LLMProvider(self.cfg.script_gen.default_provider)
             model = self.cfg.script_gen.models[provider.value]
             self.log.emit(f"Generating scene via {provider.value} ({model})...")
-            prompt = construct_prompt(self.params)
+            prompt = construct_prompt(self.params, self.cfg.script_gen.prompt_template)
             text = llm_generate(
                 prompt,
                 provider,
@@ -263,7 +263,7 @@ class ScriptGenPipelineWorker(_WorkerBase):
             model = self.cfg.script_gen.models[provider.value]
 
             self.log.emit(f"🎭 Generating German scene via {provider.value} ({model})...")
-            prompt = construct_prompt(self.params)
+            prompt = construct_prompt(self.params, self.cfg.script_gen.prompt_template)
             german = llm_generate(
                 prompt,
                 provider,

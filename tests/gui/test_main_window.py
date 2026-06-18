@@ -21,12 +21,13 @@ def gui_cfg(tmp_path) -> AppConfig:
     )
 
 
-def test_main_window_opens_with_two_top_tabs(qtbot, gui_cfg):
+def test_main_window_opens_with_three_top_tabs(qtbot, gui_cfg):
     w = MainWindow(gui_cfg)
     qtbot.addWidget(w)
-    assert w.tabs.count() == 2
+    assert w.tabs.count() == 3
     assert w.tabs.tabText(0) == "Script Generation"
     assert w.tabs.tabText(1) == "Voice Clone"
+    assert w.tabs.tabText(2) == "Prompt"
 
 
 def test_log_pane_appends_messages(qtbot, gui_cfg):

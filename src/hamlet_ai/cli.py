@@ -163,7 +163,7 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
     model = cfg.script_gen.models[provider.value]
 
     print(f"🎭 Generating German scene via {provider.value} ({model})...")
-    prompt = construct_prompt(params)
+    prompt = construct_prompt(params, cfg.script_gen.prompt_template)
     try:
         german = generate(
             prompt,
