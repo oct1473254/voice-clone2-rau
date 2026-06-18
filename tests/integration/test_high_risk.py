@@ -252,9 +252,11 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
     )
     monkeypatch.setattr(cli, "default_config", lambda: cfg)
 
-    # The LLM generates the performed (German) scene.
+    # The LLM generates the performed (German) scene. Use cast members the CLI
+    # actually requested (Hamlet + Horatio) so the splitter's allowed-cast filter
+    # keeps both lines — this test is about translation alignment, not the cast.
     def fake_german(*_a, **_k):
-        return "HAMLET: Sein.\nGERTRUDE: Sprich, Sohn."
+        return "HAMLET: Sein.\nHORATIO: Sprich, Freund."
 
     monkeypatch.setattr("hamlet_ai.core.script_gen.llm.generate", fake_german)
 
@@ -287,8 +289,8 @@ def test_cli_script_gen_uses_per_line_translation(monkeypatch, tmp_path, capsys)
     de_dir = cfg.script_gen.workspace_dir / "valid_lines" / "German"
     de_names = sorted(p.name for p in de_dir.glob("*.txt"))
     assert any("HAMLET" in n for n in de_names)
-    assert any("GERTRUDE" in n for n in de_names)
+    assert any("HORATIO" in n for n in de_names)
     en_dir = cfg.script_gen.workspace_dir / "valid_lines" / "English"
     en_names = sorted(p.name for p in en_dir.glob("*.txt"))
     assert any("HAMLET" in n for n in en_names)
-    assert any("GERTRUDE" in n for n in en_names)
+    assert any("HORATIO" in n for n in en_names)

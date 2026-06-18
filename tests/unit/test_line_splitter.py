@@ -81,6 +81,34 @@ def test_write_split_files_creates_expected_layout(tmp_path):
     assert paths["valid_dir"] == valid_dir
 
 
+def test_write_split_files_replaces_previous_run(tmp_path):
+    """A re-run must not leave the prior run's cast/line files in the workspace.
+
+    Regression: stale per-character/per-line files survived across runs and were
+    copied to the Desktop, so names from old scenes kept appearing.
+    """
+    first = ParsedScript(
+        lines=[ScriptLine(1, "HAMLET", "A."), ScriptLine(2, "GERTRUDE", "B.")],
+        characters=["GERTRUDE", "HAMLET"],
+        rejected=["junk"],
+    )
+    write_split_files(first, tmp_path, language="German")
+
+    second = ParsedScript(
+        lines=[ScriptLine(1, "HAMLET", "C.")],
+        characters=["HAMLET"],
+        rejected=[],
+    )
+    write_split_files(second, tmp_path, language="German")
+
+    valid_dir = tmp_path / "valid_lines" / "German"
+    assert sorted(p.name for p in valid_dir.glob("*.txt")) == ["001-HAMLET.txt"]
+    cast_dir = tmp_path / "cast_of_characters"
+    assert sorted(p.name for p in cast_dir.glob("*.txt")) == ["01-HAMLET.txt"]
+    # The first run's rejected file is gone since the second run rejected nothing.
+    assert not (tmp_path / "rejected_lines" / "rejected_lines_German.txt").exists()
+
+
 def test_write_split_files_skips_rejected_file_when_no_rejects(tmp_path):
     parsed = ParsedScript(
         lines=[ScriptLine(1, "HAMLET", "Hi.")],

@@ -202,15 +202,16 @@ class TranslationWorker(_WorkerBase):
 class SplitterWorker(_WorkerBase):
     finished = Signal(object)  # ParsedScript
 
-    def __init__(self, cfg: AppConfig, text: str, parent: QObject | None = None):
+    def __init__(self, cfg: AppConfig, text: str, allowed: list[str] | None = None, parent: QObject | None = None):
         super().__init__(cfg, parent)
         self.text = text
+        self.allowed = allowed
 
     @Slot()
     def run(self) -> None:
         try:
             self.log.emit("Splitting scene into lines...")
-            parsed = split_script(self.text)
+            parsed = split_script(self.text, allowed=self.allowed)
             self.log.emit(f"   ✅ {len(parsed.lines)} lines, {len(parsed.characters)} characters, {len(parsed.rejected)} rejected.")
             self.finished.emit(parsed)
         except Exception as e:  # noqa: BLE001
@@ -276,7 +277,7 @@ class ScriptGenPipelineWorker(_WorkerBase):
             de_path.write_text(german, encoding="utf-8")
             self.log.emit(f"📝 German scene saved: {de_path}")
 
-            parsed_de = split_script(german)
+            parsed_de = split_script(german, allowed=self.params.allowed_characters())
             write_split_files(parsed_de, workspace, language="German")
             self.log.emit(f"🪓 Split {len(parsed_de.lines)} German lines.")
 

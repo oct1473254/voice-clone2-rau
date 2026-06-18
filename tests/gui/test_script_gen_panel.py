@@ -63,6 +63,41 @@ def test_panel_starts_worker_with_options_when_valid(qtbot, cfg):
     assert not panel.generate_btn.isEnabled()  # busy until finished
 
 
+def test_clear_old_runs_button_clears_workspace_and_desktop(qtbot, cfg):
+    # Seed leftovers from a previous run in both the workspace and the Desktop.
+    ws = cfg.script_gen.workspace_dir
+    (ws / "cast_of_characters").mkdir(parents=True)
+    (ws / "cast_of_characters" / "01-FRED FLINTSTONE.txt").touch()
+    desktop = cfg.script_gen.base_dir
+    (desktop / "Names").mkdir(parents=True)
+    (desktop / "Names" / "01-FRED FLINTSTONE.txt").touch()
+    (desktop / "Audio").mkdir(parents=True)
+    (desktop / "Audio" / "001-FRED FLINTSTONE.mp3").write_bytes(b"OLD")
+
+    panel = ScriptGenPanel(lambda: cfg, lambda _w: None, confirm_reset=lambda: True)
+    qtbot.addWidget(panel)
+    panel.reset_btn.click()
+
+    # Workspace was reset (moved to a timestamped backup), so the stale cast file
+    # is gone from the live workspace.
+    assert not (ws / "cast_of_characters" / "01-FRED FLINTSTONE.txt").exists()
+    assert list((desktop / "Names").iterdir()) == []
+    assert list((desktop / "Audio").iterdir()) == []
+    assert "🧹" in panel.status_label.text()
+
+
+def test_clear_old_runs_button_declined_keeps_files(qtbot, cfg):
+    desktop = cfg.script_gen.base_dir
+    (desktop / "Names").mkdir(parents=True)
+    (desktop / "Names" / "01-HAMLET.txt").touch()
+
+    panel = ScriptGenPanel(lambda: cfg, lambda _w: None, confirm_reset=lambda: False)
+    qtbot.addWidget(panel)
+    panel.reset_btn.click()
+
+    assert (desktop / "Names" / "01-HAMLET.txt").exists()  # decline → nothing removed
+
+
 # ---------- Pipeline worker (dry run) ------------------------------------
 
 def test_pipeline_worker_runs_end_to_end_dry_run(qtbot, cfg, monkeypatch):

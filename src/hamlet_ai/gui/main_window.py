@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self.script_gen_tab = ScriptGenPanel(
             cfg_provider=lambda: self.cfg,
             start_worker=self.start_worker,
+            log=self.log_pane.append_message,
         )
         self.tabs.addTab(self.script_gen_tab, "Script Generation")
 
@@ -180,6 +181,9 @@ class MainWindow(QMainWindow):
         # Lock risky controls.
         if hasattr(self, "settings_action"):
             self.settings_action.setEnabled(not is_locked("settings", sm))
+        # "Clear Old Runs" is destructive — lock it during a live show.
+        if hasattr(self, "script_gen_tab"):
+            self.script_gen_tab.reset_btn.setEnabled(not is_locked("reset_workspace", sm))
         # Fallback buttons are only meaningful in Show Mode.
         for btn in getattr(self, "fallback_buttons", {}).values():
             btn.setVisible(sm)

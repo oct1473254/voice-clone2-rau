@@ -185,7 +185,7 @@ def _run_script_gen(args: argparse.Namespace, cfg: AppConfig) -> int:
     # line-by-line into English so each review line stays aligned to its German
     # character label and line_id (instead of translating + re-splitting, which
     # can drift).
-    parsed_de = split_script(german)
+    parsed_de = split_script(german, allowed=params.allowed_characters())
     write_split_files(parsed_de, workspace, language="German")
     print(f"🪓 Split {len(parsed_de.lines)} German lines.")
     print("--- German scene ---")

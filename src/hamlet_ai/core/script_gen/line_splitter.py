@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
+import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +29,18 @@ PAREN_RE = re.compile(r"\(.*?\)")
 STAGE_DIRECTION_RE = re.compile(r"^\s*[\(\[].*[\)\]]\s*$")
 # Allowed name punctuation (besides letters/digits).
 _NAME_PUNCT = set(" '-.")
+
+
+def _normalize_name(name: str) -> str:
+    """Fold a speaker label to a comparison key: accent- and case-insensitive.
+
+    So ``GEIST``, ``Geist``, and ``GÉIST`` all compare equal. Used to match a
+    parsed speaker against the allowed cast without caring how the LLM cased or
+    accented the name in the (German) output.
+    """
+    decomposed = unicodedata.normalize("NFKD", name)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return stripped.casefold().strip()
 
 
 def _is_character_name(name: str) -> bool:
@@ -79,7 +94,21 @@ def _line_id(line_number: int) -> str:
     return f"L{line_number:04d}"
 
 
-def split_script(text: str) -> ParsedScript:
+def split_script(text: str, allowed: Iterable[str] | None = None) -> ParsedScript:
+    """Parse a scene into per-line speaker/dialogue entries.
+
+    When ``allowed`` is given, any line whose speaker is not in that cast is
+    rejected with reason ``unknown_character`` rather than added — this is what
+    keeps a stray character the LLM invents (a bartender, "FRED FLINTSTONE")
+    from reaching the cast list and per-line TTS. Matching is case- and
+    accent-insensitive (see :func:`_normalize_name`), so the German Ghost
+    (``GEIST``) matches an allowed ``Ghost``/``Geist`` entry. When ``allowed``
+    is ``None`` the cast is unconstrained (legacy behaviour).
+    """
+    allowed_norm: set[str] | None = (
+        {_normalize_name(a) for a in allowed if a.strip()} if allowed is not None else None
+    )
+
     lines_out: list[ScriptLine] = []
     rejected: list[str] = []
     rejected_details: list[RejectedLine] = []
@@ -116,6 +145,11 @@ def split_script(text: str) -> ParsedScript:
         if not _is_character_name(name):
             rejected.append(raw)
             rejected_details.append(RejectedLine(idx, raw, "bad_character_name"))
+            continue
+
+        if allowed_norm is not None and _normalize_name(name) not in allowed_norm:
+            rejected.append(raw)
+            rejected_details.append(RejectedLine(idx, raw, "unknown_character"))
             continue
 
         cleaned = PAREN_RE.sub("", dialogue_part).strip()
@@ -160,6 +194,22 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
+def _reset_dir(path: Path) -> None:
+    """Replace ``path`` with an empty directory, discarding any prior contents.
+
+    Each generation run must FULLY replace the previous run's artifacts. The
+    earlier code used ``mkdir(exist_ok=True)`` and only wrote the current run's
+    files, so a character or line number that only a prior scene produced (e.g.
+    a fourth speaker the last cast had) survived in the workspace and was then
+    copied to the Desktop — the "extra names from previous runs" that break the
+    show. Clearing the directory first guarantees the output reflects only this
+    run.
+    """
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def write_split_files(parsed: ParsedScript, workspace_dir: Path, language: str) -> dict[str, Path]:
     """Write valid lines, rejected lines, and cast files into the workspace.
 
@@ -168,14 +218,21 @@ def write_split_files(parsed: ParsedScript, workspace_dir: Path, language: str) 
         workspace_dir/rejected_lines/rejected_lines_{language}.txt
         workspace_dir/cast_of_characters/{NN}-{CHARACTER}.txt  (empty marker files)
 
+    The per-language ``valid_lines`` dir and the shared ``cast_of_characters``
+    dir are reset on every call so they contain only the current run's files;
+    see :func:`_reset_dir`.
+
     Returns a dict mapping logical keys to the directories/files created.
     """
     valid_dir = workspace_dir / "valid_lines" / language
     rejected_dir = workspace_dir / "rejected_lines"
     cast_dir = workspace_dir / "cast_of_characters"
-    valid_dir.mkdir(parents=True, exist_ok=True)
+    _reset_dir(valid_dir)
+    _reset_dir(cast_dir)
     rejected_dir.mkdir(parents=True, exist_ok=True)
-    cast_dir.mkdir(parents=True, exist_ok=True)
+    # Drop this language's stale rejected file; it is only rewritten below when
+    # this run actually rejected lines.
+    (rejected_dir / f"rejected_lines_{language}.txt").unlink(missing_ok=True)
 
     written_lines: list[Path] = []
     for line in parsed.lines:

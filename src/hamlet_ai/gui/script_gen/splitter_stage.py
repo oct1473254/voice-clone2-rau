@@ -44,7 +44,8 @@ class SplitterStage(QWidget):
 
     @Slot()
     def run_splitter(self) -> None:
-        parsed = split_script(self.state.german_text)
+        allowed = self.state.params.allowed_characters() if self.state.params else None
+        parsed = split_script(self.state.german_text, allowed=allowed)
         self.state.parsed_de = parsed
 
         self.table.setRowCount(len(parsed.lines))

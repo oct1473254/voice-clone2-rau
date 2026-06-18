@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from hamlet_ai.core.script_gen.export import copy_to_desktop, reset_workspace
+from hamlet_ai.core.script_gen.export import (
+    clear_desktop_outputs,
+    copy_to_desktop,
+    reset_all_outputs,
+    reset_workspace,
+)
 
 
 def _populate_workspace(workspace: Path) -> None:
@@ -82,6 +87,55 @@ def test_reset_workspace_keeps_timestamped_backup(tmp_path):
     assert list(workspace.iterdir()) == []
 
 
+# ---------- clear desktop / reset all -------------------------------------
+
+def _populate_desktop(desktop: Path) -> None:
+    for name, fname in (
+        ("Audio", "001-HAMLET.mp3"),
+        ("TextEnglish", "001-HAMLET.txt"),
+        ("TextGerman", "001-HAMLET.txt"),
+        ("Names", "01-HAMLET.txt"),
+    ):
+        (desktop / name).mkdir(parents=True)
+        (desktop / name / fname).write_text("x")
+
+
+def test_clear_desktop_outputs_empties_all_targets(tmp_path):
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_desktop(desktop)
+    removed = clear_desktop_outputs(desktop, log_fn=lambda *_: None, confirm=True)
+    assert removed == 4
+    for name in ("Audio", "TextEnglish", "TextGerman", "Names"):
+        assert (desktop / name).is_dir()  # folder kept...
+        assert list((desktop / name).iterdir()) == []  # ...but emptied
+
+
+def test_clear_desktop_outputs_requires_confirm(tmp_path):
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_desktop(desktop)
+    with pytest.raises(ValueError):
+        clear_desktop_outputs(desktop, log_fn=lambda *_: None)
+    assert (desktop / "Names" / "01-HAMLET.txt").exists()  # untouched
+
+
+def test_reset_all_outputs_clears_workspace_and_desktop(tmp_path):
+    workspace = tmp_path / "ws"
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_workspace(workspace)
+    _populate_desktop(desktop)
+    reset_all_outputs(
+        workspace, desktop, log_fn=lambda *_: None, confirm=True, backup=False
+    )
+    assert list(workspace.iterdir()) == []
+    for name in ("Audio", "TextEnglish", "TextGerman", "Names"):
+        assert list((desktop / name).iterdir()) == []
+
+
+def test_reset_all_outputs_requires_confirm(tmp_path):
+    with pytest.raises(ValueError):
+        reset_all_outputs(tmp_path / "ws", tmp_path / "d", log_fn=lambda *_: None)
+
+
 # ---------- preview + overwrite confirm -----------------------------------
 
 def test_preview_destination_flags_overwrites(tmp_path):
@@ -98,6 +152,50 @@ def test_preview_destination_flags_overwrites(tmp_path):
     overwrite_names = [p.name for p in preview["overwrites"]]
     assert "001-HAMLET.txt" in overwrite_names
     assert len(preview["planned"]) >= 3
+
+
+def test_copy_to_desktop_removes_stale_files_from_previous_run(tmp_path):
+    """A character/line a previous run produced must not linger on the Desktop.
+
+    Regression: the cast and per-line dirs accumulated across runs, so stale
+    names (e.g. a fourth speaker only the last cast had) kept showing up in the
+    Desktop folder and broke the show.
+    """
+    workspace = tmp_path / "ws"
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    _populate_workspace(workspace)
+
+    # Simulate leftovers from an earlier export: an extra name and an extra line.
+    (desktop / "Names").mkdir(parents=True)
+    (desktop / "Names" / "02-FRED FLINTSTONE.txt").touch()
+    (desktop / "TextGerman").mkdir(parents=True)
+    (desktop / "TextGerman" / "099-GERTRUDE.txt").write_text("GERTRUDE: alt")
+    (desktop / "Audio").mkdir(parents=True)
+    (desktop / "Audio" / "099-GERTRUDE.mp3").write_bytes(b"OLD")
+
+    copy_to_desktop(workspace, desktop, log_fn=lambda *_: None)
+
+    assert not (desktop / "Names" / "02-FRED FLINTSTONE.txt").exists()
+    assert not (desktop / "TextGerman" / "099-GERTRUDE.txt").exists()
+    assert not (desktop / "Audio" / "099-GERTRUDE.mp3").exists()
+    # Current run's files are present.
+    assert (desktop / "Names" / "01-HAMLET.txt").is_file()
+    assert (desktop / "TextGerman" / "001-HAMLET.txt").is_file()
+
+
+def test_copy_to_desktop_leaves_unmanaged_target_alone(tmp_path):
+    """A run with no German must not wipe a prior German export off the Desktop."""
+    workspace = tmp_path / "ws"
+    (workspace / "valid_lines" / "English").mkdir(parents=True)
+    (workspace / "valid_lines" / "English" / "001-HAMLET.txt").write_text("HAMLET: Hi.")
+    desktop = tmp_path / "Desktop" / "LLM-H"
+    (desktop / "TextGerman").mkdir(parents=True)
+    (desktop / "TextGerman" / "001-HAMLET.txt").write_text("HAMLET: Hallo.")
+
+    copy_to_desktop(workspace, desktop, log_fn=lambda *_: None)
+
+    # German source folder was absent this run → its Desktop target untouched.
+    assert (desktop / "TextGerman" / "001-HAMLET.txt").read_text() == "HAMLET: Hallo."
 
 
 def test_copy_to_desktop_overwrite_declined_skips_existing(tmp_path):

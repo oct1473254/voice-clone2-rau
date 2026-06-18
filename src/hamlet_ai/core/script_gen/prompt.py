@@ -32,6 +32,23 @@ class ScriptGenParams:
         # setting is intentionally optional — blank lets the LLM choose.
         return errors
 
+    def allowed_characters(self) -> list[str]:
+        """The only characters a generated scene may contain.
+
+        Hamlet, the Ghost (rendered ``GEIST`` in the German output — both
+        spellings are listed so the splitter's case/accent-insensitive match
+        accepts either), and the two operator-chosen characters. ``split_script``
+        rejects any speaker outside this set, enforcing the four-character cap
+        even when the LLM ignores the prompt and invents extras.
+        """
+        return [
+            "Hamlet",
+            "Ghost",
+            "Geist",
+            self.character_one.strip(),
+            self.character_two.strip(),
+        ]
+
 
 def construct_prompt(params: ScriptGenParams) -> str:
     setting = params.setting.strip()
@@ -54,7 +71,11 @@ def construct_prompt(params: ScriptGenParams) -> str:
         "reading to the actors. Make the dialogue contemporary, taking inspiration "
         "from John Guare, Eugene O’Neill, Jose Rivera, Brandon jacobs jenkins. "
         "The scene should include in addition to hamlet and the Ghost, two "
-        f"characters, {character_one} and {character_two}. {setting_clause} "
+        f"characters, {character_one} and {character_two}. "
+        "The scene must contain ONLY these four characters — Hamlet, the Ghost, "
+        f"{character_one}, and {character_two}. Do not invent, name, mention, or "
+        "give dialogue to any other character (no servants, messengers, friends, "
+        f"narrators, or crowds). {setting_clause} "
         "Please reply with only the scene no commentary. "
         "Please generate the scene in German language."
     )

@@ -101,6 +101,29 @@ def copy_to_desktop(
         if not allow_overwrite:
             log_fn(f"⚠️  Skipping {len(overwrites)} existing file(s) (overwrite declined).")
 
+    # Mirror, don't merge: remove files left in a managed target by a previous
+    # run so the Desktop reflects ONLY this scene. Without this, a character or
+    # line the last run had (a stray "FRED FLINTSTONE", a higher line count)
+    # lingers in Names/Audio/Text* and breaks the show. A target is only synced
+    # if this run produced something for it (its source subfolder exists), so a
+    # partial run never silently wipes an unrelated target. Skipped entirely
+    # when the operator declined the overwrite prompt.
+    planned_dests = {dest for _, dest in plan}
+    removed = 0
+    if allow_overwrite:
+        for sub, target_name, _suffix in _PLAN_SPECS:
+            if not (workspace_dir / sub).is_dir():
+                continue
+            dest_dir = desktop_root / target_name
+            if not dest_dir.is_dir():
+                continue
+            for existing in dest_dir.iterdir():
+                if existing.is_file() and existing not in planned_dests:
+                    existing.unlink()
+                    removed += 1
+    if removed:
+        log_fn(f"🧹 Removed {removed} stale file(s) from previous run(s).")
+
     copied = 0
     for src, dest in plan:
         if dest.exists() and not allow_overwrite:
@@ -149,4 +172,60 @@ def reset_workspace(
         log_fn(f"🧹 Workspace reset: {workspace_dir}")
 
     workspace_dir.mkdir(parents=True, exist_ok=True)
+    return backup_path
+
+
+def clear_desktop_outputs(
+    desktop_root: Path,
+    log_fn: LogFn = print,
+    *,
+    confirm: bool = False,
+) -> int:
+    """Delete the generated text and audio under the Desktop layout.
+
+    Empties the four export-owned folders (Audio, TextEnglish, TextGerman,
+    Names) so no file from an earlier run survives. The folders themselves are
+    kept (recreated empty). Requires ``confirm=True``. Returns the number of
+    items removed.
+    """
+    if not confirm:
+        raise ValueError("clear_desktop_outputs is destructive; pass confirm=True to proceed.")
+    removed = 0
+    for name in _TARGET_KEYS:
+        target = desktop_root / name
+        if not target.is_dir():
+            continue
+        for entry in target.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+    log_fn(f"🧹 Cleared {removed} item(s) from {desktop_root}")
+    return removed
+
+
+def reset_all_outputs(
+    workspace_dir: Path,
+    desktop_root: Path,
+    log_fn: LogFn = print,
+    *,
+    confirm: bool = False,
+    backup: bool = True,
+    now: float | None = None,
+) -> Path | None:
+    """Clear BOTH the workspace and the Desktop output folders.
+
+    This is what the GUI's "Clear Old Runs" button calls so that no text or
+    audio from a previous scene can survive into the next show. The workspace is
+    kept as a timestamped backup by default (see :func:`reset_workspace`); the
+    Desktop export folders are emptied outright. Requires ``confirm=True``.
+    Returns the workspace backup path (or ``None``).
+    """
+    if not confirm:
+        raise ValueError("reset_all_outputs is destructive; pass confirm=True to proceed.")
+    backup_path = reset_workspace(
+        workspace_dir, log_fn, confirm=True, backup=backup, now=now
+    )
+    clear_desktop_outputs(desktop_root, log_fn, confirm=True)
     return backup_path

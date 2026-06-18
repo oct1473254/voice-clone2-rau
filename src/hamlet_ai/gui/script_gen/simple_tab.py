@@ -45,12 +45,18 @@ class ScriptGenPanel(QWidget):
         cfg_provider: Callable[[], AppConfig],
         start_worker: Callable[[object], None],
         provider_tester: Callable[[str, AppConfig], tuple[bool, str]] | None = None,
+        log: Callable[[str], None] | None = None,
+        confirm_reset: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._cfg_provider = cfg_provider
         self._start_worker = start_worker
         self._provider_tester = provider_tester
+        self._log = log or (lambda *_a: None)
+        # Injectable so tests can confirm/decline without a modal dialog; when
+        # None we pop a QMessageBox at click time (see ``_confirm_reset``).
+        self._confirm_reset = confirm_reset
         cfg = cfg_provider()
 
         layout = QVBoxLayout(self)
@@ -93,6 +99,14 @@ class ScriptGenPanel(QWidget):
         self.tts_box.setChecked(True)
         opts_row.addWidget(self.tts_box)
         opts_row.addStretch(1)
+        self.reset_btn = QPushButton("Clear Old Runs")
+        self.reset_btn.setObjectName("clearRunsButton")
+        self.reset_btn.setToolTip(
+            "Delete all text and audio from previous runs (workspace + Desktop "
+            "output folders) so no old lines or names linger into the next show."
+        )
+        self.reset_btn.clicked.connect(self._on_reset)
+        opts_row.addWidget(self.reset_btn)
         self.test_btn = QPushButton("Test Connection")
         self.test_btn.clicked.connect(self._on_test_connection)
         opts_row.addWidget(self.test_btn)
@@ -145,6 +159,7 @@ class ScriptGenPanel(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self.generate_btn.setEnabled(not busy)
         self.test_btn.setEnabled(not busy)
+        self.reset_btn.setEnabled(not busy)
         self.generate_btn.setText("Generating…" if busy else "Generate Scene")
 
     # ---------- slots ----------
@@ -160,6 +175,42 @@ class ScriptGenPanel(QWidget):
         except Exception as e:  # noqa: BLE001
             ok, msg = False, str(e)
         self.status_label.setText(("✅ " if ok else "⚠️ ") + msg)
+
+    def _confirm_reset_dialog(self, desktop) -> bool:
+        from PySide6.QtWidgets import QMessageBox
+
+        resp = QMessageBox.question(
+            self,
+            "Clear old runs?",
+            "Delete all generated text and audio from previous runs?\n\n"
+            "This empties the Desktop output folders (Audio, TextEnglish, "
+            f"TextGerman, Names) under:\n{desktop}\n\n"
+            "Previously generated scenes are kept as a timestamped backup beside "
+            "the workspace.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return resp == QMessageBox.StandardButton.Yes
+
+    @Slot()
+    def _on_reset(self) -> None:
+        from hamlet_ai.core.script_gen.export import reset_all_outputs
+
+        cfg = self._cfg_provider()
+        desktop = cfg.script_gen.base_dir
+        confirm = self._confirm_reset or (lambda: self._confirm_reset_dialog(desktop))
+        if not confirm():
+            return
+        try:
+            reset_all_outputs(
+                cfg.script_gen.workspace_dir, desktop, log_fn=self._log, confirm=True
+            )
+        except Exception as e:  # noqa: BLE001 — surface failure to the operator
+            self.status_label.setText(f"❌ Reset failed: {e}")
+            return
+        self.german_view.clear()
+        self.english_view.clear()
+        self.status_label.setText(f"🧹 Cleared previous runs from {desktop}")
 
     @Slot()
     def _on_generate(self) -> None:
