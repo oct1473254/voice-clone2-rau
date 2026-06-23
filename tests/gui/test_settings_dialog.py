@@ -36,7 +36,7 @@ def test_dialog_reads_initial_values(qtbot, setting_cfg):
     assert dlg.dry_run_box.isChecked() is True
     assert dlg.provider_combo.currentText() == "anthropic"
     assert dlg.recording_target.value() == pytest.approx(90.0)
-    assert dlg.model_inputs["anthropic"].text() == "claude-sonnet-4-6"
+    assert dlg.model_inputs["anthropic"].text() == "claude-opus-4-8"
 
 
 def test_apply_to_cfg_writes_back_changes(qtbot, setting_cfg):

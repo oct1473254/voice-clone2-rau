@@ -252,7 +252,7 @@ class MainWindow(QMainWindow):
             try:
                 save_config(self.cfg)
                 self.log_pane.append_message("Settings saved.")
-            except OSError as e:
+            except Exception as e:
                 self.log_pane.append_message(f"Failed to save settings: {e}")
             self.cfg_changed.emit()
         return result
@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
         try:
             save_config(self.cfg)
             self.log_pane.append_message("Prompt template saved.")
-        except OSError as e:
+        except Exception as e:
             self.log_pane.append_message(f"Failed to save prompt: {e}")
         self.cfg_changed.emit()
 

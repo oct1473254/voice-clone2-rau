@@ -19,7 +19,22 @@ from pathlib import Path
 from typing import Any
 
 
-SETTINGS_PATH_DEFAULT = Path.home() / ".config" / "hamlet-ai" / "settings.json"
+def _default_config_dir() -> Path:
+    """Directory holding settings.json (and the GUI crash log).
+
+    Defaults to ``~/.config/hamlet-ai`` but can be relocated with the
+    ``HAMLET_AI_CONFIG_DIR`` environment variable. The launcher sets this to a
+    writable, app-local path so the app never depends on ``~/.config`` being
+    owned by the launching user — that directory can end up root-owned (and thus
+    unwritable) on machines where the app was ever started with ``sudo``.
+    """
+    override = os.environ.get("HAMLET_AI_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "hamlet-ai"
+
+
+SETTINGS_PATH_DEFAULT = _default_config_dir() / "settings.json"
 
 
 @dataclass
@@ -108,7 +123,7 @@ class ScriptGenSettings:
     prompt_template: str | None = None
     models: dict[str, str] = field(
         default_factory=lambda: {
-            "anthropic": "claude-sonnet-4-6",
+            "anthropic": "claude-opus-4-8",
             "openai": "gpt-4o",
             "ollama": "llama3.1",
         }

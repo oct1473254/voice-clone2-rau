@@ -80,4 +80,18 @@ if [ -f ".env" ]; then
     set +a
 fi
 
+# --- Settings/state location ------------------------------------------------
+# The app stores settings.json (saved prompt, model choice, etc.) here. The
+# default ~/.config/hamlet-ai can be root-owned — and thus unwritable — on
+# machines where the app was ever started with sudo, which surfaces as
+# "permission denied" when saving. Keep state beside the app instead, where the
+# launching user can always write. Override by exporting HAMLET_AI_CONFIG_DIR.
+export HAMLET_AI_CONFIG_DIR="${HAMLET_AI_CONFIG_DIR:-$REPO_DIR/.hamlet-state}"
+mkdir -p "$HAMLET_AI_CONFIG_DIR"
+# One-time carry-over of an existing ~/.config settings file (prompt, etc.).
+legacy_settings="$HOME/.config/hamlet-ai/settings.json"
+if [ ! -f "$HAMLET_AI_CONFIG_DIR/settings.json" ] && [ -f "$legacy_settings" ]; then
+    cp "$legacy_settings" "$HAMLET_AI_CONFIG_DIR/settings.json" 2>/dev/null || true
+fi
+
 exec hamlet-ai gui

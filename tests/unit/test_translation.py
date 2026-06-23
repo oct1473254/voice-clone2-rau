@@ -31,7 +31,7 @@ def test_translate_defaults_to_default_provider():
     )
     assert out == "Sein oder Nichtsein."
     assert captured["api_key"] == "an-key"
-    assert captured["model"] == "claude-sonnet-4-6"
+    assert captured["model"] == "claude-opus-4-8"
     assert "German" in captured["messages"][0]["content"]
 
 

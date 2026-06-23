@@ -50,7 +50,7 @@ def test_default_config_script_gen_provider_defaults():
     assert cfg.script_gen.default_provider == "anthropic"
     assert cfg.script_gen.translation_provider is None
     assert cfg.script_gen.models == {
-        "anthropic": "claude-sonnet-4-6",
+        "anthropic": "claude-opus-4-8",
         "openai": "gpt-4o",
         "ollama": "llama3.1",
     }

@@ -58,3 +58,6 @@ newHamlet_*.txt
 German_NewHamlet_*.txt
 .env
 .env
+
+# App-local settings/state written by the launcher (HAMLET_AI_CONFIG_DIR)
+.hamlet-state/
